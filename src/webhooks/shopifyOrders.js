@@ -1,49 +1,55 @@
 const express = require('express');
-const router = express.Router();
 const pool = require('../db');
+const asyncHandler = require('../middleware/asyncHandler');
 
-router.post('/orders/create', async (req, res) => {
-  // Always ack fast so Shopify doesn't retry/duplicate the webhook.
-  // We do the real work after responding.
-  res.status(200).send('OK');
+const router = express.Router();
+const ALLOWED_PLAN_MONTHS = new Set([1, 3, 6, 12]);
 
+function getPlanMonths(lineItem) {
+  const title = lineItem.variant_title || lineItem.title || '';
+  const match = title.match(/(?:^|\D)(1|3|6|12)(?:\D|$)/);
+  return match ? Number(match[1]) : null;
+}
+
+function addMonths(date, months) {
+  const result = new Date(date);
+  const originalDay = result.getDate();
+  result.setDate(1);
+  result.setMonth(result.getMonth() + months);
+  const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+  result.setDate(Math.min(originalDay, lastDay));
+  return result;
+}
+
+router.post('/orders/create', asyncHandler(async (req, res) => {
   const client = await pool.connect();
 
   try {
     const order = req.body;
+    const lineItem = order.line_items?.find((item) => getPlanMonths(item));
 
-    // ---- 1. Find your subscription line item ----
-    // Assumes the subscription product is the relevant line item.
-    // If customers can buy other non-subscription products too,
-    // you'll want to loop line_items and only process ones matching
-    // your subscription product ID(s).
-    const lineItem = order.line_items?.[0];
     if (!lineItem) {
-      console.warn(`Order ${order.id} has no line items — skipping`);
-      return;
+      console.warn(`Order ${order.id} has no recognized subscription line item - skipping`);
+      return res.status(200).send('Ignored');
     }
 
     const variantTitle = lineItem.variant_title || lineItem.title || '';
-    const monthsMatch = variantTitle.match(/(\d+)/);
+    const planMonths = getPlanMonths(lineItem);
+    const orderDate = new Date(order.created_at);
 
-    if (!monthsMatch) {
-      console.warn(`Could not parse plan length from variant title: "${variantTitle}" — skipping order ${order.id}`);
-      return;
+    if (!ALLOWED_PLAN_MONTHS.has(planMonths) || !order.id || Number.isNaN(orderDate.getTime())) {
+      return res.status(400).send('Invalid order payload');
     }
 
-    const planMonths = parseInt(monthsMatch[1], 10);
-    const orderDate = new Date(order.created_at);
-    const endDate = new Date(orderDate);
-    endDate.setMonth(endDate.getMonth() + planMonths);
-
+    const subscriptionEndDate = addMonths(orderDate, planMonths);
     const shippingAddr = order.shipping_address || {};
     const customerName = `${shippingAddr.first_name || ''} ${shippingAddr.last_name || ''}`.trim();
+    const customerEmail = order.customer?.email || order.email || null;
+    const customerPhone = order.customer?.phone || shippingAddr.phone || null;
+    const customerId = order.customer?.id || null;
 
     await client.query('BEGIN');
 
-    // ---- 2. Insert subscription record ----
-    // ON CONFLICT guards against Shopify sending the same webhook twice
-    // (it happens - Shopify's "at least once" delivery guarantee)
     const subResult = await client.query(
       `INSERT INTO subscriptions
         (order_id, order_name, customer_id, customer_email, customer_phone,
@@ -55,35 +61,30 @@ router.post('/orders/create', async (req, res) => {
        RETURNING id`,
       [
         order.id,
-        order.name,
-        order.customer?.id || null,
-        order.customer?.email || order.email,
-        order.customer?.phone || shippingAddr.phone || null,
+        order.name || null,
+        customerId,
+        customerEmail,
+        customerPhone,
         JSON.stringify(shippingAddr),
-        lineItem.title,
+        lineItem.title || null,
         variantTitle,
-        order.total_price,
+        order.total_price || null,
         planMonths,
         orderDate,
         orderDate,
-        endDate,
-        'active'
+        subscriptionEndDate,
+        'active',
       ]
     );
 
     if (subResult.rows.length === 0) {
-      console.log(`Order ${order.id} already processed — skipping duplicate webhook`);
       await client.query('ROLLBACK');
-      return;
+      return res.status(200).send('Already processed');
     }
 
     const subscriptionId = subResult.rows[0].id;
-
-    // ---- 3. Generate one shipment row per month ----
-    for (let i = 0; i < planMonths; i++) {
-      const shipDate = new Date(orderDate);
-      shipDate.setDate(shipDate.getDate() + 30 * i);
-
+    for (let i = 0; i < planMonths; i += 1) {
+      const shipDate = addMonths(orderDate, i);
       await client.query(
         `INSERT INTO shipments
           (subscription_id, order_id, customer_id, customer_name, customer_email,
@@ -93,28 +94,29 @@ router.post('/orders/create', async (req, res) => {
         [
           subscriptionId,
           order.id,
-          order.customer?.id || null,
+          customerId,
           customerName,
-          order.customer?.email || order.email,
-          order.customer?.phone || shippingAddr.phone || null,
+          customerEmail,
+          customerPhone,
           JSON.stringify(shippingAddr),
-          lineItem.title,
+          lineItem.title || null,
           i + 1,
           planMonths,
-          shipDate.toISOString().split('T')[0], // DATE only, no time
-          'pending'
+          shipDate.toISOString().split('T')[0],
+          'pending',
         ]
       );
     }
 
     await client.query('COMMIT');
-    console.log(`✅ Order ${order.name} (${order.id}): created subscription #${subscriptionId} with ${planMonths} shipments`);
-  } catch (err) {
+    console.log(`Order ${order.name || order.id} created subscription #${subscriptionId} with ${planMonths} shipments`);
+    return res.status(200).send('OK');
+  } catch (error) {
     await client.query('ROLLBACK');
-    console.error('❌ Error processing order webhook:', err);
+    throw error;
   } finally {
     client.release();
   }
-});
+}));
 
 module.exports = router;

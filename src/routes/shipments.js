@@ -3,11 +3,23 @@ const router = express.Router();
 const axios = require('axios');
 const pool = require('../db');
 const { sendSMS } = require('../utils/sms');
+const asyncHandler = require('../middleware/asyncHandler');
+const httpError = require('../utils/httpError');
+
+const SHIPMENT_STATUSES = new Set(['pending', 'ready_to_ship', 'shipped', 'delivered', 'failed', 'cancelled']);
+
+function requireValidDate(value, field) {
+  if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw httpError(400, `${field} must use YYYY-MM-DD format`);
+  }
+}
 
 // GET /api/shipments?status=pending&from=2026-08-01&to=2026-08-31
-router.get('/', async (req, res) => {
-  try {
+router.get('/', asyncHandler(async (req, res) => {
     const { status, from, to, customer_email } = req.query;
+    if (status && !SHIPMENT_STATUSES.has(status)) throw httpError(400, 'Invalid shipment status');
+    requireValidDate(from, 'from');
+    requireValidDate(to, 'to');
     const conditions = [];
     const values = [];
 
@@ -35,15 +47,10 @@ router.get('/', async (req, res) => {
     );
 
     res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
+}));
 
 // GET /api/shipments/due-today  (the main dashboard view)
-router.get('/due-today', async (req, res) => {
-  try {
+router.get('/due-today', asyncHandler(async (req, res) => {
     const result = await pool.query(
       `SELECT * FROM shipments
        WHERE scheduled_ship_date <= CURRENT_DATE
@@ -51,42 +58,38 @@ router.get('/due-today', async (req, res) => {
        ORDER BY scheduled_ship_date ASC`
     );
     res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
+}));
 
 // GET /api/shipments/subscriptions/:id  (all shipments for one subscription)
-router.get('/subscriptions/:id', async (req, res) => {
-  try {
+router.get('/subscriptions/:id', asyncHandler(async (req, res) => {
     const result = await pool.query(
       `SELECT * FROM shipments WHERE subscription_id = $1 ORDER BY shipment_number ASC`,
       [req.params.id]
     );
     res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
+}));
 
 // POST /api/shipments/:id/create-spx
 // NOTE: This assumes SPX has an API. If they don't (many PH couriers only
 // offer manual CSV upload / dashboard entry), replace this with logic that
 // generates a CSV row per shipment for "Import to Mass Edit" instead —
 // see the SPX screenshot you shared, it has that exact button.
-router.post('/:id/create-spx', async (req, res) => {
-  try {
+router.post('/:id/create-spx', asyncHandler(async (req, res) => {
     const { id } = req.params;
+    if (!process.env.SPX_API_BASE_URL || !process.env.SPX_API_KEY) {
+      throw httpError(503, 'SPX integration is not configured');
+    }
     const shipResult = await pool.query('SELECT * FROM shipments WHERE id = $1', [id]);
     const shipment = shipResult.rows[0];
 
     if (!shipment) {
       return res.status(404).json({ error: 'Shipment not found' });
     }
+    if (shipment.spx_entry_created && shipment.spx_tracking_number) {
+      return res.json({ success: true, tracking_number: shipment.spx_tracking_number, already_exists: true });
+    }
 
-    const address = shipment.shipping_address;
+    const address = shipment.shipping_address || {};
 
     // --- Placeholder SPX API call. Confirm actual endpoint/fields with SPX. ---
     const spxResponse = await axios.post(
@@ -110,9 +113,12 @@ router.post('/:id/create-spx', async (req, res) => {
       { headers: { Authorization: `Bearer ${process.env.SPX_API_KEY}` } }
     );
 
-    const trackingNumber = spxResponse.data.tracking_number;
+    const trackingNumber = spxResponse.data?.tracking_number;
+    if (!trackingNumber) {
+      throw httpError(502, 'SPX did not return a tracking number');
+    }
 
-    await pool.query(
+    const updateResult = await pool.query(
       `UPDATE shipments
        SET spx_tracking_number = $1, spx_entry_created = true,
            spx_entry_date = NOW(), shipment_status = 'shipped',
@@ -120,6 +126,7 @@ router.post('/:id/create-spx', async (req, res) => {
        WHERE id = $2`,
       [trackingNumber, id]
     );
+    if (updateResult.rowCount === 0) throw httpError(404, 'Shipment not found');
 
     if (shipment.customer_phone) {
       await sendSMS(
@@ -129,19 +136,17 @@ router.post('/:id/create-spx', async (req, res) => {
     }
 
     res.json({ success: true, tracking_number: trackingNumber });
-  } catch (err) {
-    console.error('SPX creation failed:', err.response?.data || err.message);
-    res.status(500).json({ error: 'SPX entry failed', details: err.message });
-  }
-});
+}));
 
 // PATCH /api/shipments/:id  (manual status override, e.g. mark delivered/failed)
-router.patch('/:id', async (req, res) => {
-  try {
+router.patch('/:id', asyncHandler(async (req, res) => {
     const { status, notes, tracking_number } = req.body;
     const fields = [];
     const values = [];
 
+    if (status && !SHIPMENT_STATUSES.has(status)) {
+      throw httpError(400, 'Invalid shipment status');
+    }
     if (status) {
       values.push(status);
       fields.push(`shipment_status = $${values.length}`);
@@ -162,16 +167,14 @@ router.patch('/:id', async (req, res) => {
     fields.push(`updated_at = NOW()`);
     values.push(req.params.id);
 
-    await pool.query(
+    const result = await pool.query(
       `UPDATE shipments SET ${fields.join(', ')} WHERE id = $${values.length}`,
       values
     );
 
+    if (result.rowCount === 0) throw httpError(404, 'Shipment not found');
+
     res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
+}));
 
 module.exports = router;

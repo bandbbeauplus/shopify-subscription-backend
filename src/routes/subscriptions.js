@@ -1,11 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
+const asyncHandler = require('../middleware/asyncHandler');
+const httpError = require('../utils/httpError');
+
+const SUBSCRIPTION_STATUSES = new Set(['active', 'paused', 'cancelled', 'completed']);
 
 // GET /api/subscriptions?status=active&email=customer@gmail.com
-router.get('/', async (req, res) => {
-  try {
+router.get('/', asyncHandler(async (req, res) => {
     const { status, email } = req.query;
+    if (status && !SUBSCRIPTION_STATUSES.has(status)) throw httpError(400, 'Invalid subscription status');
     const conditions = [];
     const values = [];
 
@@ -24,23 +28,20 @@ router.get('/', async (req, res) => {
       values
     );
     res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
+}));
 
 // PATCH /api/subscriptions/:id/cancel
 // Cancels the subscription AND any not-yet-shipped shipments.
-router.patch('/:id/cancel', async (req, res) => {
+router.patch('/:id/cancel', asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    await client.query(
+    const result = await client.query(
       `UPDATE subscriptions SET subscription_status = 'cancelled', updated_at = NOW() WHERE id = $1`,
       [req.params.id]
     );
+    if (result.rowCount === 0) throw httpError(404, 'Subscription not found');
 
     await client.query(
       `UPDATE shipments SET shipment_status = 'cancelled', updated_at = NOW()
@@ -52,11 +53,10 @@ router.patch('/:id/cancel', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    throw err;
   } finally {
     client.release();
   }
-});
+}));
 
 module.exports = router;
