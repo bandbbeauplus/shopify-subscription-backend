@@ -7,12 +7,21 @@ const notFound = require('./middleware/notFound');
 const shopifyOrdersWebhook = require('./webhooks/shopifyOrders');
 const shipmentsRoutes = require('./routes/shipments');
 const subscriptionsRoutes = require('./routes/subscriptions');
+const verifyDashboardApiKey = require('./middleware/verifyDashboardApiKey');
 
 function createApp() {
   const app = express();
 
-  // Intentionally unrestricted during testing. Add an allow-list before production.
-  app.use(cors());
+  const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('Origin is not allowed by CORS'));
+    }
+  }));
   app.disable('x-powered-by');
 
   // Shopify HMAC verification must receive the exact raw request body.
@@ -30,6 +39,7 @@ function createApp() {
     res.json({ status: 'ok', time: new Date().toISOString() });
   });
 
+  app.use('/api', verifyDashboardApiKey);
   app.use('/api/shipments', shipmentsRoutes);
   app.use('/api/subscriptions', subscriptionsRoutes);
 
