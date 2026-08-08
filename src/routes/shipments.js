@@ -8,6 +8,57 @@ const httpError = require('../utils/httpError');
 
 const SHIPMENT_STATUSES = new Set(['pending', 'ready_to_ship', 'shipped', 'delivered', 'failed', 'cancelled']);
 
+function csvCell(value) {
+  const text = value === null || value === undefined ? '' : String(value);
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function shipmentCsvRow(shipment) {
+  const address = shipment.shipping_address || {};
+  return [
+    shipment.order_id,
+    `BB-${shipment.order_id}-${shipment.shipment_number}`,
+    shipment.customer_name,
+    shipment.customer_phone,
+    shipment.customer_email,
+    address.address1,
+    address.address2,
+    address.city,
+    address.province,
+    address.zip,
+    address.country || 'PH',
+    shipment.product_name,
+    1,
+    200,
+    '',
+    shipment.scheduled_ship_date,
+    shipment.id,
+  ].map(csvCell).join(',');
+}
+
+function shipmentsToCsv(shipments) {
+  const header = [
+    'order_reference',
+    'spx_reference',
+    'customer_name',
+    'customer_phone',
+    'customer_email',
+    'address1',
+    'address2',
+    'city',
+    'province',
+    'postal_code',
+    'country',
+    'product_description',
+    'quantity',
+    'weight_grams',
+    'cod_amount',
+    'scheduled_ship_date',
+    'internal_shipment_id',
+  ].map(csvCell).join(',');
+  return `${header}\r\n${shipments.map(shipmentCsvRow).join('\r\n')}\r\n`;
+}
+
 function requireValidDate(value, field) {
   if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     throw httpError(400, `${field} must use YYYY-MM-DD format`);
@@ -47,6 +98,28 @@ router.get('/', asyncHandler(async (req, res) => {
     );
 
     res.json(result.rows);
+}));
+
+// GET /api/shipments/spx-csv
+// Generates a bulk-import file for shipments currently due for fulfillment.
+// Column names must be matched against SPX's current template before upload.
+router.get('/spx-csv', asyncHandler(async (req, res) => {
+    const result = await pool.query(
+      `SELECT * FROM shipments
+       WHERE scheduled_ship_date <= CURRENT_DATE
+       AND shipment_status = 'pending'
+       ORDER BY scheduled_ship_date ASC, id ASC`
+    );
+
+    if (result.rows.length === 0) {
+      throw httpError(404, 'No pending shipments are due for export');
+    }
+
+    res.set({
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="spx-shipments-${new Date().toISOString().slice(0, 10)}.csv"`,
+    });
+    res.send(`\uFEFF${shipmentsToCsv(result.rows)}`);
 }));
 
 // GET /api/shipments/due-today  (the main dashboard view)

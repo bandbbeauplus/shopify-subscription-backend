@@ -4,6 +4,14 @@ Tracks prepaid Shopify subscription orders (1/3/6/12 month plans), generates
 a shipment schedule per order, and gives you a dashboard-ready API to manage
 fulfillment + SPX handoff.
 
+## Current status
+
+This backend is an internal MVP. Shopify order HMAC verification, duplicate-order protection, transactional schedule creation, dashboard authentication, and manual shipment management are implemented.
+
+The SPX request is currently a placeholder based on an assumed REST API shape. Do not treat `create-spx` as production-ready until SPX confirms the endpoint, authentication, fields, tracking response, retry behavior, and idempotency rules. SMS delivery also uses a provider-specific example and must be verified.
+
+The API currently assumes a single Shopify store. Records are not scoped by shop, and the dashboard uses one shared API key.
+
 ## How it fits together
 
 ```
@@ -78,6 +86,7 @@ the Shopify webhook at your live URL instead of ngrok.
 |---|---|---|
 | POST | `/webhooks/orders/create` | Shopify calls this automatically |
 | GET | `/api/shipments/due-today` | Main dashboard view |
+| GET | `/api/shipments/spx-csv` | Download a CSV for pending shipments due today |
 | GET | `/api/shipments?status=&from=&to=` | Filtered shipment list |
 | GET | `/api/shipments/subscriptions/:id` | All shipments for one subscription |
 | POST | `/api/shipments/:id/create-spx` | Create SPX entry + notify customer |
@@ -97,9 +106,25 @@ this works for real:
    their "Import to Mass Edit" format (seen in your SPX app screenshot) —
    happy to build that version once you confirm which path SPX supports
 
+## Known limitations before production
+
+- Order plans are detected by parsing the line-item or variant title for `1`, `3`, `6`, or `12`. Variant IDs or product metadata would be more reliable.
+- The webhook currently does not enforce a paid financial status before creating a subscription.
+- The dashboard list endpoints return all matching rows and do not provide pagination.
+- Concurrent calls to `POST /api/shipments/:id/create-spx` can create duplicate external shipments because the operation is not locked or idempotency-keyed.
+- Manual shipment updates can leave related fields inconsistent, such as `actual_ship_date`, `spx_entry_created`, and `shipment_status`.
+- The database schema does not enforce the documented status and plan-month values with check constraints, and `updated_at` is not maintained by a database trigger.
+- There are no automated tests yet.
+- For a multi-store Shopify app, add a shop identifier to subscriptions, shipments, webhook processing, and dashboard authorization before onboarding additional stores.
+- The SPX CSV export uses neutral column names and a 200-gram default weight. Compare it with SPX's current mass-create template and update the column mapping before uploading live orders.
+
 ## Next steps once this is running
 
 - Build the actual dashboard UI (React) that calls these endpoints
-- Add auth (this API has none right now — anyone with the URL can hit it)
+- Keep the dashboard API key private; `/api` routes require `X-Dashboard-Key`.
 - Add a cron job to catch shipments whose date passed without action, and
   alert your team (Slack webhook, email, etc.)
+- Keep the dashboard API key private and rotate it if exposed.
+- Add pagination and database-side dashboard summary queries.
+- Add automated tests for HMAC verification, duplicate webhooks, date scheduling,
+  cancellation, status transitions, and SPX retry/idempotency behavior.
