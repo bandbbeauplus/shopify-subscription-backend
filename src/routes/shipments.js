@@ -142,6 +142,23 @@ router.get('/subscriptions/:id', asyncHandler(async (req, res) => {
     res.json(result.rows);
 }));
 
+// GET /api/shipments/:id/spx-csv
+// Downloads one pending shipment in the same import format as the bulk export.
+router.get('/:id/spx-csv', asyncHandler(async (req, res) => {
+    const result = await pool.query(
+      `SELECT * FROM shipments WHERE id = $1 AND shipment_status = 'pending'`,
+      [req.params.id]
+    );
+    const shipment = result.rows[0];
+    if (!shipment) throw httpError(404, 'Pending shipment not found');
+
+    res.set({
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="spx-shipment-${shipment.id}.csv"`,
+    });
+    res.send(`\uFEFF${shipmentsToCsv([shipment])}`);
+}));
+
 // POST /api/shipments/:id/create-spx
 // NOTE: This assumes SPX has an API. If they don't (many PH couriers only
 // offer manual CSV upload / dashboard entry), replace this with logic that

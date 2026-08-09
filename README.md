@@ -87,6 +87,7 @@ the Shopify webhook at your live URL instead of ngrok.
 | POST | `/webhooks/orders/create` | Shopify calls this automatically |
 | GET | `/api/shipments/due-today` | Main dashboard view |
 | GET | `/api/shipments/spx-csv` | Download a CSV for pending shipments due today |
+| GET | `/api/shipments/:id/spx-csv` | Download one pending shipment as CSV |
 | GET | `/api/shipments?status=&from=&to=` | Filtered shipment list |
 | GET | `/api/shipments/subscriptions/:id` | All shipments for one subscription |
 | POST | `/api/shipments/:id/create-spx` | Create SPX entry + notify customer |
