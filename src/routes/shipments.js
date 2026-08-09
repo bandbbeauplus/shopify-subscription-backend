@@ -142,8 +142,8 @@ router.post('/:id/confirm-spx', asyncHandler(async (req, res) => {
        SET spx_tracking_number = $1,
            spx_entry_created = true,
            spx_entry_date = COALESCE(spx_entry_date, NOW()),
-           shipment_status = $2,
-           actual_ship_date = CASE WHEN $2 = 'shipped' THEN COALESCE(actual_ship_date, CURRENT_DATE) ELSE actual_ship_date END,
+           shipment_status = $2::varchar,
+           actual_ship_date = CASE WHEN $2::varchar = 'shipped' THEN COALESCE(actual_ship_date, CURRENT_DATE) ELSE actual_ship_date END,
            updated_at = NOW()
        WHERE id = $3
        RETURNING *`,
