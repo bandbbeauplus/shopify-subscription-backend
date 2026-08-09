@@ -62,7 +62,7 @@ router.get('/spx-xlsx', asyncHandler(async (req, res) => {
        ORDER BY sh.scheduled_ship_date ASC, sh.id ASC`
     );
 
-    const workbook = buildSpxWorkbook(result.rows);
+    const workbook = await buildSpxWorkbook(result.rows);
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="spx-shipments-${new Date().toISOString().slice(0, 10)}.xlsx"`,
@@ -103,7 +103,7 @@ router.get('/:id/spx-xlsx', asyncHandler(async (req, res) => {
     const shipment = result.rows[0];
     if (!shipment) throw httpError(404, 'Pending shipment not found');
 
-    const workbook = buildSpxWorkbook([shipment]);
+    const workbook = await buildSpxWorkbook([shipment]);
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="spx-shipment-${shipment.id}.xlsx"`,

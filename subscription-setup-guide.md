@@ -279,8 +279,8 @@ We don't have confirmed SPX API documentation. Two possibilities:
 - Currently written as a guess based on typical courier APIs
 
 **Option B: SPX uses Excel imports**
-- Use the implemented official `.xlsx` template export
-- Backend fills SPX's "Import to Mass Edit" workbook without removing its hidden lookup sheets
+- Use the implemented one-sheet `.xlsx` export
+- The workbook contains only the 21 SPX "Import to Mass Edit" columns; it does not copy the template's guide or lookup tabs
 - Your team downloads it daily, uploads to SPX portal manually
 - Slightly more work, but many PH couriers only offer this
 
@@ -365,7 +365,7 @@ Should return array of shipments with today's scheduled_ship_date.
 ### 2. Confirm SPX Path (THIS WEEK)
 - Email/contact SPX: "Do you have a merchant API?"
 - If YES: give me their API docs, I'll update the backend
-- If NO: continue using the implemented official Excel-template export
+- If NO: continue using the implemented one-sheet Excel export
 
 ### 3. Build Dashboard UI (NEXT WEEK)
 Options (in order of speed):

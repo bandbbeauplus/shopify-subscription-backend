@@ -103,9 +103,9 @@ this works for real:
 
 1. Ask SPX support if a merchant API exists (vs. manual Excel upload)
 2. If yes: update the request body/auth in `create-spx` to match their docs
-3. If no: use the implemented `.xlsx` export, which populates SPX's official
-   Philippines mass-order template while preserving its hidden lookup sheets
-   and validations.
+3. If no: use the implemented `.xlsx` export, which creates a one-sheet
+   Philippines mass-order workbook with only the 21 SPX import columns and
+   matching data validations.
 
 ## Known limitations before production
 
