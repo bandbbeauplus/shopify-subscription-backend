@@ -9,6 +9,14 @@ const httpError = require('../utils/httpError');
 
 const SHIPMENT_STATUSES = new Set(['pending', 'ready_to_ship', 'shipped', 'delivered', 'failed', 'cancelled']);
 
+function normalizeTrackingNumber(value) {
+  const trackingNumber = String(value || '').trim();
+  if (!/^[A-Za-z0-9-]{4,50}$/.test(trackingNumber)) {
+    throw httpError(400, 'SPX tracking number must be 4-50 letters, numbers, or hyphens');
+  }
+  return trackingNumber;
+}
+
 function requireValidDate(value, field) {
   if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     throw httpError(400, `${field} must use YYYY-MM-DD format`);
@@ -111,6 +119,47 @@ router.get('/:id/spx-xlsx', asyncHandler(async (req, res) => {
     res.send(workbook);
 }));
 
+// POST /api/shipments/:id/confirm-spx
+// Records the tracking number returned by SPX after a manual Excel import.
+// Creating a label means ready_to_ship; the caller can explicitly mark it
+// shipped after handoff or after creating the matching Shopify fulfillment.
+router.post('/:id/confirm-spx', asyncHandler(async (req, res) => {
+    const trackingNumber = normalizeTrackingNumber(req.body.tracking_number);
+    const requestedStatus = req.body.status || 'ready_to_ship';
+    if (!new Set(['ready_to_ship', 'shipped']).has(requestedStatus)) {
+      throw httpError(400, 'Confirmed SPX shipments must be ready_to_ship or shipped');
+    }
+
+    const existingResult = await pool.query('SELECT * FROM shipments WHERE id = $1', [req.params.id]);
+    const existing = existingResult.rows[0];
+    if (!existing) throw httpError(404, 'Shipment not found');
+    if (existing.spx_tracking_number && existing.spx_tracking_number !== trackingNumber) {
+      throw httpError(409, 'This shipment already has a different SPX tracking number');
+    }
+
+    const result = await pool.query(
+      `UPDATE shipments
+       SET spx_tracking_number = $1,
+           spx_entry_created = true,
+           spx_entry_date = COALESCE(spx_entry_date, NOW()),
+           shipment_status = $2,
+           actual_ship_date = CASE WHEN $2 = 'shipped' THEN COALESCE(actual_ship_date, CURRENT_DATE) ELSE actual_ship_date END,
+           updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [trackingNumber, requestedStatus, req.params.id]
+    );
+
+    if (!existing.spx_tracking_number && existing.customer_phone) {
+      await sendSMS(
+        existing.customer_phone,
+        `Hi! SPX tracking for b&b BEAU+ shipment ${existing.shipment_number}/${existing.total_shipments}: ${trackingNumber}. Track at https://spx.ph/track`
+      );
+    }
+
+    res.json({ success: true, shipment: result.rows[0] });
+}));
+
 // POST /api/shipments/:id/create-spx
 // NOTE: This assumes SPX has an API. The dashboard currently uses the
 // official Excel-template export above for manual "Import to Mass Edit".
@@ -196,8 +245,14 @@ router.patch('/:id', asyncHandler(async (req, res) => {
       fields.push(`notes = $${values.length}`);
     }
     if (tracking_number) {
-      values.push(tracking_number);
+      values.push(normalizeTrackingNumber(tracking_number));
       fields.push(`spx_tracking_number = $${values.length}`);
+      fields.push('spx_entry_created = true');
+      fields.push('spx_entry_date = COALESCE(spx_entry_date, NOW())');
+    }
+
+    if (status === 'shipped' || status === 'delivered') {
+      fields.push('actual_ship_date = COALESCE(actual_ship_date, CURRENT_DATE)');
     }
 
     if (!fields.length) {

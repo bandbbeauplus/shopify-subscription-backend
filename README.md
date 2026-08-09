@@ -8,7 +8,7 @@ fulfillment + SPX handoff.
 
 This backend is an internal MVP. Shopify order HMAC verification, duplicate-order protection, transactional schedule creation, dashboard authentication, and manual shipment management are implemented.
 
-The SPX request is currently a placeholder based on an assumed REST API shape. Do not treat `create-spx` as production-ready until SPX confirms the endpoint, authentication, fields, tracking response, retry behavior, and idempotency rules. SMS delivery also uses a provider-specific example and must be verified.
+The direct SPX API request is currently a placeholder based on an assumed REST API shape. The supported operational path is to export the Excel workbook, import it in SPX, then confirm the returned tracking number in the dashboard. Do not treat `create-spx` as production-ready until SPX confirms the endpoint, authentication, fields, tracking response, retry behavior, and idempotency rules. SMS delivery also uses a provider-specific example and must be verified.
 
 The API currently assumes a single Shopify store. Records are not scoped by shop, and the dashboard uses one shared API key.
 
@@ -20,13 +20,15 @@ Shopify order created
 Webhook → POST /webhooks/orders/create   (verified via HMAC)
       ↓
 Inserts 1 row into `subscriptions`
-Inserts N rows into `shipments` (one per month, 30 days apart)
+Inserts N rows into `shipments` (one per calendar month)
       ↓
 Your dashboard calls GET /api/shipments/due-today
       ↓
-Backend team clicks "Create SPX Entry" → POST /api/shipments/:id/create-spx
+Team uploads the Excel file to SPX and pastes the returned tracking number
       ↓
-Row updated: tracking number saved, status = shipped, customer SMS sent
+POST /api/shipments/:id/confirm-spx
+      ↓
+Row updated: tracking saved, status = ready_to_ship, customer SMS sent
 ```
 
 ## Setup
@@ -90,6 +92,7 @@ the Shopify webhook at your live URL instead of ngrok.
 | GET | `/api/shipments/:id/spx-xlsx` | Download SPX's populated Excel template for one shipment |
 | GET | `/api/shipments?status=&from=&to=` | Filtered shipment list |
 | GET | `/api/shipments/subscriptions/:id` | All shipments for one subscription |
+| POST | `/api/shipments/:id/confirm-spx` | Save tracking returned by an SPX Excel import |
 | POST | `/api/shipments/:id/create-spx` | Create SPX entry + notify customer |
 | PATCH | `/api/shipments/:id` | Manually update status/notes/tracking |
 | GET | `/api/subscriptions?status=&email=` | Look up subscriptions |
@@ -105,7 +108,8 @@ this works for real:
 2. If yes: update the request body/auth in `create-spx` to match their docs
 3. If no: use the implemented `.xlsx` export, which creates a one-sheet
    Philippines mass-order workbook with only the 21 SPX import columns and
-   matching data validations.
+   matching data validations. After SPX accepts the file, paste its tracking
+   number into the dashboard to reconcile the shipment.
 
 ## Known limitations before production
 
@@ -113,9 +117,9 @@ this works for real:
 - The webhook currently does not enforce a paid financial status before creating a subscription.
 - The dashboard list endpoints return all matching rows and do not provide pagination.
 - Concurrent calls to `POST /api/shipments/:id/create-spx` can create duplicate external shipments because the operation is not locked or idempotency-keyed.
-- Manual shipment updates can leave related fields inconsistent, such as `actual_ship_date`, `spx_entry_created`, and `shipment_status`.
+- Manual status changes remain operator-controlled; only `shipped` and `delivered` automatically set `actual_ship_date`.
 - The database schema does not enforce the documented status and plan-month values with check constraints, and `updated_at` is not maintained by a database trigger.
-- There are no automated tests yet.
+- Automated coverage currently focuses on workbook creation and validation; API, webhook, and status-transition coverage is still needed.
 - For a multi-store Shopify app, add a shop identifier to subscriptions, shipments, webhook processing, and dashboard authorization before onboarding additional stores.
 - SPX workbook exports default to 0.2 kg and 20 × 15 × 10 cm. Set the `SPX_PARCEL_*` environment variables to the actual packed dimensions before live use.
 - The export uses `General merchandise`, `Sender Pay`, and no COD by default. Configure `SPX_ITEM_TYPE` and `SPX_PAYMENT_METHOD` if your account requires different accepted values.
