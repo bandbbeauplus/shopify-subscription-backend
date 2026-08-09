@@ -86,8 +86,8 @@ the Shopify webhook at your live URL instead of ngrok.
 |---|---|---|
 | POST | `/webhooks/orders/create` | Shopify calls this automatically |
 | GET | `/api/shipments/due-today` | Main dashboard view |
-| GET | `/api/shipments/spx-csv` | Download a CSV for pending shipments due today |
-| GET | `/api/shipments/:id/spx-csv` | Download one pending shipment as CSV |
+| GET | `/api/shipments/spx-xlsx` | Download SPX's populated Excel template for shipments due today |
+| GET | `/api/shipments/:id/spx-xlsx` | Download SPX's populated Excel template for one shipment |
 | GET | `/api/shipments?status=&from=&to=` | Filtered shipment list |
 | GET | `/api/shipments/subscriptions/:id` | All shipments for one subscription |
 | POST | `/api/shipments/:id/create-spx` | Create SPX entry + notify customer |
@@ -101,11 +101,11 @@ I don't have confirmed SPX API docs — `create-spx` in
 `src/routes/shipments.js` is written assuming a typical REST shape. Before
 this works for real:
 
-1. Ask SPX support if a merchant API exists (vs. manual/CSV-only entry)
+1. Ask SPX support if a merchant API exists (vs. manual Excel upload)
 2. If yes: update the request body/auth in `create-spx` to match their docs
-3. If no: replace that function with logic that generates a CSV matching
-   their "Import to Mass Edit" format (seen in your SPX app screenshot) —
-   happy to build that version once you confirm which path SPX supports
+3. If no: use the implemented `.xlsx` export, which populates SPX's official
+   Philippines mass-order template while preserving its hidden lookup sheets
+   and validations.
 
 ## Known limitations before production
 
@@ -117,7 +117,8 @@ this works for real:
 - The database schema does not enforce the documented status and plan-month values with check constraints, and `updated_at` is not maintained by a database trigger.
 - There are no automated tests yet.
 - For a multi-store Shopify app, add a shop identifier to subscriptions, shipments, webhook processing, and dashboard authorization before onboarding additional stores.
-- The SPX CSV export uses neutral column names and a 200-gram default weight. Compare it with SPX's current mass-create template and update the column mapping before uploading live orders.
+- SPX workbook exports default to 0.2 kg and 20 × 15 × 10 cm. Set the `SPX_PARCEL_*` environment variables to the actual packed dimensions before live use.
+- The export uses `General merchandise`, `Sender Pay`, and no COD by default. Configure `SPX_ITEM_TYPE` and `SPX_PAYMENT_METHOD` if your account requires different accepted values.
 
 ## Next steps once this is running
 

@@ -278,13 +278,13 @@ We don't have confirmed SPX API documentation. Two possibilities:
 - Update `src/routes/shipments.js` → `create-spx` endpoint with real request/response format
 - Currently written as a guess based on typical courier APIs
 
-**Option B: SPX uses CSV imports only**
-- Replace the API call with CSV generation
-- Backend creates a CSV file matching SPX's "Import to Mass Edit" format
+**Option B: SPX uses Excel imports**
+- Use the implemented official `.xlsx` template export
+- Backend fills SPX's "Import to Mass Edit" workbook without removing its hidden lookup sheets
 - Your team downloads it daily, uploads to SPX portal manually
 - Slightly more work, but many PH couriers only offer this
 
-**Action:** Contact SPX support (they're your payment gateway, they know your account) and ask: "Do you have a merchant API for creating shipments, or is it manual/CSV only?"
+**Action:** Contact SPX support and ask: "Do you have a merchant API for creating shipments, or should we continue using the official Excel mass-order upload?"
 
 ### 2. SMS Notifications ⚠️ PLACEHOLDER
 Code references `SMS_API_KEY` and `SMS_SENDER_NAME` but doesn't actually send yet.
@@ -365,7 +365,7 @@ Should return array of shipments with today's scheduled_ship_date.
 ### 2. Confirm SPX Path (THIS WEEK)
 - Email/contact SPX: "Do you have a merchant API?"
 - If YES: give me their API docs, I'll update the backend
-- If NO (CSV only): I'll build CSV export instead
+- If NO: continue using the implemented official Excel-template export
 
 ### 3. Build Dashboard UI (NEXT WEEK)
 Options (in order of speed):
@@ -386,7 +386,7 @@ Dashboard should display:
 - Test sends
 
 ### 5. Test End-to-End
-Once SPX API/CSV is confirmed and dashboard is built:
+Once the SPX API or Excel workflow is confirmed and the dashboard is built:
 - Create a real test order
 - See it in dashboard
 - Create SPX entry manually
