@@ -24,9 +24,15 @@ Inserts N rows into `shipments` (one per calendar month)
       ↓
 Your dashboard calls GET /api/shipments/due-today
       ↓
-Team uploads the Excel file to SPX and pastes the returned tracking number
+Handler releases the due shipment to OMS
+      ↓
+OMS/WMS confirms submitted → picking → packed
+      ↓
+Team uploads the Excel file to SPX and records the returned tracking/AWB
       ↓
 POST /api/shipments/:id/confirm-spx
+      ↓
+App sends the SPX AWB to OMS/WMS for warehouse printing and attachment
       ↓
 Row updated: tracking saved, status = ready_to_ship, customer SMS sent
 ```
@@ -92,6 +98,10 @@ the Shopify webhook at your live URL instead of ngrok.
 | GET | `/api/shipments/:id/spx-xlsx` | Download SPX's populated Excel template for one shipment |
 | GET | `/api/shipments?status=&from=&to=` | Filtered shipment list |
 | GET | `/api/shipments/subscriptions/:id` | All shipments for one subscription |
+| GET | `/api/shipments/integration-config` | Show whether OMS uses mock or API mode |
+| POST | `/api/shipments/:id/release-to-oms` | Create the warehouse fulfillment order |
+| POST | `/api/shipments/:id/sync-oms` | Refresh submitted/picking/packed status |
+| POST | `/api/shipments/:id/send-awb-to-oms` | Send SPX tracking and AWB to the warehouse |
 | POST | `/api/shipments/:id/confirm-spx` | Save tracking returned by an SPX Excel import |
 | POST | `/api/shipments/:id/create-spx` | Create SPX entry + notify customer |
 | PATCH | `/api/shipments/:id` | Manually update status/notes/tracking |
@@ -110,6 +120,24 @@ this works for real:
    Philippines mass-order workbook with only the 21 SPX import columns and
    matching data validations. After SPX accepts the file, paste its tracking
    number into the dashboard to reconcile the shipment.
+
+## OMS/WMS integration modes
+
+Use `OMS_MODE=mock` until Ninja Van provides the Sellercraft/Anchanto API
+contract and UAT credentials. Mock mode never calls an external OMS. Repeatedly
+using **Advance mock status** moves a released shipment from `submitted` to
+`picking` and then `packed`, allowing the complete dashboard workflow to be
+tested safely.
+
+When API access is available, set `OMS_MODE=api`, configure the API base URL,
+token, and endpoint paths, then update `src/services/omsClient.js` if the final
+Anchanto request/response fields differ from the isolated placeholder mapping.
+The client already sends a deterministic shipment reference as an idempotency
+key so retries do not intentionally create a second warehouse order.
+
+For an existing database, rerun `schema.sql` before starting the updated app.
+Its `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements add the OMS/WMS fields
+without deleting existing shipment data.
 
 ## Known limitations before production
 

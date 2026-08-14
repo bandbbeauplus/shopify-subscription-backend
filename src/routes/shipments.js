@@ -6,6 +6,12 @@ const { sendSMS } = require('../utils/sms');
 const { buildSpxWorkbook } = require('../utils/spxWorkbook');
 const asyncHandler = require('../middleware/asyncHandler');
 const httpError = require('../utils/httpError');
+const {
+  OMS_MODE,
+  createFulfillmentOrder,
+  getFulfillmentStatus,
+  sendAwb,
+} = require('../services/omsClient');
 
 const SHIPMENT_STATUSES = new Set(['pending', 'ready_to_ship', 'shipped', 'delivered', 'failed', 'cancelled']);
 
@@ -22,6 +28,32 @@ function requireValidDate(value, field) {
     throw httpError(400, `${field} must use YYYY-MM-DD format`);
   }
 }
+
+function normalizeAwbUrl(value) {
+  const url = String(value || '').trim();
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') throw new Error('Not HTTPS');
+  } catch {
+    throw httpError(400, 'AWB PDF URL must be a valid HTTPS URL');
+  }
+  return url;
+}
+
+async function shipmentById(id) {
+  const result = await pool.query(
+    'SELECT *, scheduled_ship_date <= CURRENT_DATE AS is_due FROM shipments WHERE id = $1',
+    [id]
+  );
+  const shipment = result.rows[0];
+  if (!shipment) throw httpError(404, 'Shipment not found');
+  return shipment;
+}
+
+router.get('/integration-config', (req, res) => {
+  res.json({ oms_mode: OMS_MODE });
+});
 
 // GET /api/shipments?status=pending&from=2026-08-01&to=2026-08-31
 router.get('/', asyncHandler(async (req, res) => {
@@ -67,6 +99,8 @@ router.get('/spx-xlsx', asyncHandler(async (req, res) => {
        JOIN subscriptions s ON s.id = sh.subscription_id
        WHERE sh.scheduled_ship_date <= CURRENT_DATE
        AND sh.shipment_status = 'pending'
+       AND sh.warehouse_status = 'packed'
+       AND sh.spx_tracking_number IS NULL
        ORDER BY sh.scheduled_ship_date ASC, sh.id ASC`
     );
 
@@ -105,11 +139,14 @@ router.get('/:id/spx-xlsx', asyncHandler(async (req, res) => {
       `SELECT sh.*, s.total_price_paid, s.plan_months
        FROM shipments sh
        JOIN subscriptions s ON s.id = sh.subscription_id
-       WHERE sh.id = $1 AND sh.shipment_status = 'pending'`,
+       WHERE sh.id = $1
+       AND sh.shipment_status = 'pending'
+       AND sh.warehouse_status = 'packed'
+       AND sh.spx_tracking_number IS NULL`,
       [req.params.id]
     );
     const shipment = result.rows[0];
-    if (!shipment) throw httpError(404, 'Pending shipment not found');
+    if (!shipment) throw httpError(404, 'A packed shipment without an SPX booking was not found');
 
     const workbook = await buildSpxWorkbook([shipment]);
     res.set({
@@ -119,12 +156,109 @@ router.get('/:id/spx-xlsx', asyncHandler(async (req, res) => {
     res.send(workbook);
 }));
 
+// POST /api/shipments/:id/release-to-oms
+// Uses a deterministic external reference so a future OMS implementation can
+// safely enforce idempotency when requests are retried.
+router.post('/:id/release-to-oms', asyncHandler(async (req, res) => {
+    const shipment = await shipmentById(req.params.id);
+    if (!shipment.is_due) throw httpError(409, 'This shipment is not due yet');
+    if (shipment.shipment_status !== 'pending') {
+      throw httpError(409, `A ${shipment.shipment_status} shipment cannot be released to OMS`);
+    }
+    if (shipment.oms_order_id) {
+      return res.json({ success: true, shipment, already_exists: true });
+    }
+    if (!new Set(['not_sent', 'failed']).has(shipment.warehouse_status)) {
+      throw httpError(409, 'This shipment has already entered the warehouse workflow');
+    }
+
+    try {
+      const omsOrder = await createFulfillmentOrder(shipment);
+      const result = await pool.query(
+        `UPDATE shipments
+         SET oms_order_id = $1,
+             oms_order_reference = $2,
+             warehouse_status = $3,
+             oms_submitted_at = COALESCE(oms_submitted_at, NOW()),
+             oms_last_synced_at = NOW(),
+             warehouse_error = NULL,
+             updated_at = NOW()
+         WHERE id = $4 AND oms_order_id IS NULL
+         RETURNING *`,
+        [omsOrder.orderId, omsOrder.reference, omsOrder.status, shipment.id]
+      );
+      if (!result.rows[0]) {
+        return res.json({ success: true, shipment: await shipmentById(shipment.id), already_exists: true });
+      }
+      return res.json({ success: true, shipment: result.rows[0] });
+    } catch (error) {
+      await pool.query(
+        `UPDATE shipments
+         SET warehouse_status = 'failed', warehouse_error = $1, updated_at = NOW()
+         WHERE id = $2 AND oms_order_id IS NULL`,
+        [String(error.message || 'OMS request failed').slice(0, 500), shipment.id]
+      );
+      throw error;
+    }
+}));
+
+// POST /api/shipments/:id/sync-oms
+// In mock mode each click advances submitted -> picking -> packed.
+router.post('/:id/sync-oms', asyncHandler(async (req, res) => {
+    const shipment = await shipmentById(req.params.id);
+    if (!shipment.oms_order_id) throw httpError(409, 'Release this shipment to OMS first');
+    if (new Set(['awb_sent', 'ready_for_pickup']).has(shipment.warehouse_status)) {
+      return res.json({ success: true, shipment, already_final: true });
+    }
+
+    const omsResult = await getFulfillmentStatus(shipment);
+    const result = await pool.query(
+      `UPDATE shipments
+       SET warehouse_status = $1,
+           oms_last_synced_at = NOW(),
+           oms_packed_at = CASE WHEN $1 = 'packed' THEN COALESCE(oms_packed_at, NOW()) ELSE oms_packed_at END,
+           warehouse_error = NULL,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [omsResult.status, shipment.id]
+    );
+    res.json({ success: true, shipment: result.rows[0] });
+}));
+
+// POST /api/shipments/:id/send-awb-to-oms
+router.post('/:id/send-awb-to-oms', asyncHandler(async (req, res) => {
+    const shipment = await shipmentById(req.params.id);
+    if (!shipment.oms_order_id) throw httpError(409, 'Release this shipment to OMS first');
+    if (shipment.warehouse_status === 'awb_sent') {
+      return res.json({ success: true, shipment, already_exists: true });
+    }
+    if (shipment.warehouse_status !== 'packed') {
+      throw httpError(409, 'The warehouse must confirm packed before receiving the AWB');
+    }
+
+    const omsResult = await sendAwb(shipment);
+    const result = await pool.query(
+      `UPDATE shipments
+       SET warehouse_status = $1,
+           spx_awb_sent_at = COALESCE(spx_awb_sent_at, NOW()),
+           oms_last_synced_at = NOW(),
+           warehouse_error = NULL,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [omsResult.status, shipment.id]
+    );
+    res.json({ success: true, shipment: result.rows[0] });
+}));
+
 // POST /api/shipments/:id/confirm-spx
 // Records the tracking number returned by SPX after a manual Excel import.
 // Creating a label means ready_to_ship; the caller can explicitly mark it
 // shipped after handoff or after creating the matching Shopify fulfillment.
 router.post('/:id/confirm-spx', asyncHandler(async (req, res) => {
     const trackingNumber = normalizeTrackingNumber(req.body.tracking_number);
+    const awbUrl = normalizeAwbUrl(req.body.awb_url);
     const requestedStatus = req.body.status || 'ready_to_ship';
     if (!new Set(['ready_to_ship', 'shipped']).has(requestedStatus)) {
       throw httpError(400, 'Confirmed SPX shipments must be ready_to_ship or shipped');
@@ -133,6 +267,9 @@ router.post('/:id/confirm-spx', asyncHandler(async (req, res) => {
     const existingResult = await pool.query('SELECT * FROM shipments WHERE id = $1', [req.params.id]);
     const existing = existingResult.rows[0];
     if (!existing) throw httpError(404, 'Shipment not found');
+    if (existing.warehouse_status !== 'packed') {
+      throw httpError(409, 'SPX can only be booked after the warehouse confirms packed');
+    }
     if (existing.spx_tracking_number && existing.spx_tracking_number !== trackingNumber) {
       throw httpError(409, 'This shipment already has a different SPX tracking number');
     }
@@ -140,14 +277,15 @@ router.post('/:id/confirm-spx', asyncHandler(async (req, res) => {
     const result = await pool.query(
       `UPDATE shipments
        SET spx_tracking_number = $1,
+           spx_awb_url = COALESCE($2, spx_awb_url),
            spx_entry_created = true,
            spx_entry_date = COALESCE(spx_entry_date, NOW()),
-           shipment_status = $2::varchar,
-           actual_ship_date = CASE WHEN $2::varchar = 'shipped' THEN COALESCE(actual_ship_date, CURRENT_DATE) ELSE actual_ship_date END,
+           shipment_status = $3::varchar,
+           actual_ship_date = CASE WHEN $3::varchar = 'shipped' THEN COALESCE(actual_ship_date, CURRENT_DATE) ELSE actual_ship_date END,
            updated_at = NOW()
-       WHERE id = $3
+       WHERE id = $4
        RETURNING *`,
-      [trackingNumber, requestedStatus, req.params.id]
+      [trackingNumber, awbUrl, requestedStatus, req.params.id]
     );
 
     if (!existing.spx_tracking_number && existing.customer_phone) {
@@ -173,6 +311,9 @@ router.post('/:id/create-spx', asyncHandler(async (req, res) => {
 
     if (!shipment) {
       return res.status(404).json({ error: 'Shipment not found' });
+    }
+    if (shipment.warehouse_status !== 'packed') {
+      throw httpError(409, 'SPX can only be booked after the warehouse confirms packed');
     }
     if (shipment.spx_entry_created && shipment.spx_tracking_number) {
       return res.json({ success: true, tracking_number: shipment.spx_tracking_number, already_exists: true });

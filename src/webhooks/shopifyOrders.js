@@ -88,9 +88,9 @@ router.post('/orders/create', asyncHandler(async (req, res) => {
       await client.query(
         `INSERT INTO shipments
           (subscription_id, order_id, customer_id, customer_name, customer_email,
-           customer_phone, shipping_address, product_name, shipment_number,
+           customer_phone, shipping_address, product_name, product_sku, product_quantity, shipment_number,
            total_shipments, scheduled_ship_date, shipment_status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [
           subscriptionId,
           order.id,
@@ -100,6 +100,8 @@ router.post('/orders/create', asyncHandler(async (req, res) => {
           customerPhone,
           JSON.stringify(shippingAddr),
           lineItem.title || null,
+          lineItem.sku || null,
+          lineItem.quantity || 1,
           i + 1,
           planMonths,
           shipDate.toISOString().split('T')[0],
