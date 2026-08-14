@@ -4,9 +4,9 @@
   "description": "Backend for prepaid subscription tracking + SPX fulfillment (b&b BEAU+)",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node node_modules/nodemon/bin/nodemon.js src/server.js",
-    "migrate": "psql $DATABASE_URL -f schema.sql",
+    "start": "node src/migrate.js && node src/server.js",
+    "dev": "node src/migrate.js && node node_modules/nodemon/bin/nodemon.js src/server.js",
+    "migrate": "node src/migrate.js",
     "test": "node --test"
   },
   "dependencies": {
