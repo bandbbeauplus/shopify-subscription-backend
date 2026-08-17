@@ -24,7 +24,10 @@ Inserts N rows into `shipments` (one per calendar month)
       ↓
 Your dashboard calls GET /api/shipments/due-today
       ↓
-Handler releases the due shipment to OMS
+For shipment 1, dashboard links the original Shopify checkout order
+For shipment 2+, dashboard creates a tagged zero-value Shopify delivery order
+      ↓
+SellerCraft imports the Shopify order and sends it to Anchanto WMS
       ↓
 OMS/WMS confirms submitted → picking → packed
       ↓
@@ -99,6 +102,8 @@ the Shopify webhook at your live URL instead of ngrok.
 | GET | `/api/shipments?status=&from=&to=` | Filtered shipment list |
 | GET | `/api/shipments/subscriptions/:id` | All shipments for one subscription |
 | GET | `/api/shipments/integration-config` | Show whether OMS uses mock or API mode |
+| GET | `/api/shipments/:id` | Load one shipment for a Shopify delivery release |
+| POST | `/api/shipments/:id/link-shopify-delivery-order` | Save the Shopify order SellerCraft will import |
 | POST | `/api/shipments/:id/release-to-oms` | Create the warehouse fulfillment order |
 | POST | `/api/shipments/:id/sync-oms` | Refresh submitted/picking/packed status |
 | POST | `/api/shipments/:id/send-awb-to-oms` | Send SPX tracking and AWB to the warehouse |
@@ -135,9 +140,9 @@ Anchanto request/response fields differ from the isolated placeholder mapping.
 The client already sends a deterministic shipment reference as an idempotency
 key so retries do not intentionally create a second warehouse order.
 
-For an existing database, rerun `schema.sql` before starting the updated app.
-Its `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements add the OMS/WMS fields
-without deleting existing shipment data.
+The production start command runs `schema.sql` automatically. Its
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements add the OMS/WMS and
+Shopify delivery-order fields without deleting existing shipment data.
 
 ## Known limitations before production
 

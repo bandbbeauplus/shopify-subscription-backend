@@ -156,6 +156,13 @@ router.get('/:id/spx-xlsx', asyncHandler(async (req, res) => {
     res.send(workbook);
 }));
 
+// GET /api/shipments/:id
+// Keep this after named GET routes so values such as "spx-xlsx" are not
+// interpreted as shipment IDs.
+router.get('/:id', asyncHandler(async (req, res) => {
+  res.json(await shipmentById(req.params.id));
+}));
+
 // POST /api/shipments/:id/release-to-oms
 // Uses a deterministic external reference so a future OMS implementation can
 // safely enforce idempotency when requests are retried.
@@ -200,6 +207,56 @@ router.post('/:id/release-to-oms', asyncHandler(async (req, res) => {
       );
       throw error;
     }
+}));
+
+// POST /api/shipments/:id/link-shopify-delivery-order
+// Records the Shopify order that SellerCraft will import. The first shipment
+// links the checkout order; later shipments link a zero-value child order.
+router.post('/:id/link-shopify-delivery-order', asyncHandler(async (req, res) => {
+    const shipment = await shipmentById(req.params.id);
+    const orderId = String(req.body.shopify_order_id || '').trim();
+    const orderName = String(req.body.shopify_order_name || '').trim();
+    const variantId = String(req.body.product_variant_id || '').trim() || null;
+
+    if (!/^\d+$/.test(orderId)) throw httpError(400, 'A valid Shopify order ID is required');
+    if (!orderName || orderName.length > 50) throw httpError(400, 'A valid Shopify order name is required');
+    if (variantId && !/^\d+$/.test(variantId)) throw httpError(400, 'Invalid Shopify product variant ID');
+    if (!shipment.is_due) throw httpError(409, 'This shipment is not due yet');
+    if (shipment.shipment_status !== 'pending') {
+      throw httpError(409, `A ${shipment.shipment_status} shipment cannot be released to SellerCraft`);
+    }
+    if (shipment.shopify_delivery_order_id) {
+      if (shipment.shopify_delivery_order_id !== orderId) {
+        throw httpError(409, 'This shipment is already linked to a different Shopify order');
+      }
+      return res.json({ success: true, shipment, already_exists: true });
+    }
+    if (!new Set(['not_sent', 'failed']).has(shipment.warehouse_status)) {
+      throw httpError(409, 'This shipment has already entered the warehouse workflow');
+    }
+
+    const result = await pool.query(
+      `UPDATE shipments
+       SET shopify_delivery_order_id = $1,
+           shopify_delivery_order_name = $2,
+           shopify_delivery_created_at = NOW(),
+           product_variant_id = COALESCE(product_variant_id, $3),
+           oms_order_id = $1,
+           oms_order_reference = $2,
+           warehouse_status = 'submitted',
+           oms_submitted_at = COALESCE(oms_submitted_at, NOW()),
+           oms_last_synced_at = NOW(),
+           warehouse_error = NULL,
+           updated_at = NOW()
+       WHERE id = $4 AND shopify_delivery_order_id IS NULL
+       RETURNING *`,
+      [orderId, orderName, variantId, shipment.id]
+    );
+
+    if (!result.rows[0]) {
+      return res.json({ success: true, shipment: await shipmentById(shipment.id), already_exists: true });
+    }
+    res.json({ success: true, shipment: result.rows[0] });
 }));
 
 // POST /api/shipments/:id/sync-oms

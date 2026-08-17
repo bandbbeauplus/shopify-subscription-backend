@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS shipments (
   shipping_address JSONB,
   product_name VARCHAR(200),
   product_sku VARCHAR(100),
+  product_variant_id VARCHAR(50),
   product_quantity INT DEFAULT 1,
   shipment_number INT,                     -- 1 of 6, 2 of 6, etc.
   total_shipments INT,                     -- so dashboard can show "2 of 6"
@@ -45,6 +46,9 @@ CREATE TABLE IF NOT EXISTS shipments (
   spx_awb_sent_at TIMESTAMP,
   oms_order_id VARCHAR(100),
   oms_order_reference VARCHAR(100),
+  shopify_delivery_order_id VARCHAR(50),
+  shopify_delivery_order_name VARCHAR(50),
+  shopify_delivery_created_at TIMESTAMP,
   warehouse_status VARCHAR(30) DEFAULT 'not_sent', -- not_sent, submitted, picking, packed, awb_sent, ready_for_pickup, failed
   oms_submitted_at TIMESTAMP,
   oms_packed_at TIMESTAMP,
@@ -57,11 +61,15 @@ CREATE TABLE IF NOT EXISTS shipments (
 
 -- Safe upgrades for databases created before the OMS/WMS workflow was added.
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS product_sku VARCHAR(100);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS product_variant_id VARCHAR(50);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS product_quantity INT DEFAULT 1;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_awb_url TEXT;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_awb_sent_at TIMESTAMP;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS oms_order_id VARCHAR(100);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS oms_order_reference VARCHAR(100);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS shopify_delivery_order_id VARCHAR(50);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS shopify_delivery_order_name VARCHAR(50);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS shopify_delivery_created_at TIMESTAMP;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS warehouse_status VARCHAR(30) DEFAULT 'not_sent';
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS oms_submitted_at TIMESTAMP;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS oms_packed_at TIMESTAMP;

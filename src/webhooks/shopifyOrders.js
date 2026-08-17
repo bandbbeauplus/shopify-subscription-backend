@@ -26,6 +26,17 @@ router.post('/orders/create', asyncHandler(async (req, res) => {
 
   try {
     const order = req.body;
+    const tags = Array.isArray(order.tags)
+      ? order.tags
+      : String(order.tags || '').split(',').map((tag) => tag.trim());
+
+    // Orders generated for later prepaid deliveries contain the same plan
+    // variant as the checkout order. Never turn those child orders into a new
+    // subscription and another set of scheduled shipments.
+    if (tags.includes('bb_subscription_delivery')) {
+      return res.status(200).send('Generated delivery order ignored');
+    }
+
     const lineItem = order.line_items?.find((item) => getPlanMonths(item));
 
     if (!lineItem) {
@@ -88,9 +99,9 @@ router.post('/orders/create', asyncHandler(async (req, res) => {
       await client.query(
         `INSERT INTO shipments
           (subscription_id, order_id, customer_id, customer_name, customer_email,
-           customer_phone, shipping_address, product_name, product_sku, product_quantity, shipment_number,
-           total_shipments, scheduled_ship_date, shipment_status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+           customer_phone, shipping_address, product_name, product_sku, product_variant_id,
+           product_quantity, shipment_number, total_shipments, scheduled_ship_date, shipment_status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [
           subscriptionId,
           order.id,
@@ -101,6 +112,7 @@ router.post('/orders/create', asyncHandler(async (req, res) => {
           JSON.stringify(shippingAddr),
           lineItem.title || null,
           lineItem.sku || null,
+          lineItem.variant_id || null,
           lineItem.quantity || 1,
           i + 1,
           planMonths,
