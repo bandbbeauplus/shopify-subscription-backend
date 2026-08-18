@@ -1,15 +1,10 @@
 const express = require('express');
 const pool = require('../db');
 const asyncHandler = require('../middleware/asyncHandler');
+const { getPlanMonths } = require('../utils/subscriptionPlan');
 
 const router = express.Router();
 const ALLOWED_PLAN_MONTHS = new Set([1, 3, 6, 12]);
-
-function getPlanMonths(lineItem) {
-  const title = lineItem.variant_title || lineItem.title || '';
-  const match = title.match(/(?:^|\D)(1|3|6|12)(?:\D|$)/);
-  return match ? Number(match[1]) : null;
-}
 
 function addMonths(date, months) {
   const result = new Date(date);
