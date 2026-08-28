@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
 const pool = require('../db');
 const { sendSMS } = require('../utils/sms');
 const { buildSpxWorkbook } = require('../utils/spxWorkbook');
@@ -12,6 +11,20 @@ const {
   getFulfillmentStatus,
   sendAwb,
 } = require('../services/omsClient');
+const {
+  SPX_ENVIRONMENT,
+  SPX_MODE,
+  createOrder: createSpxOrder,
+  getAwb: getSpxAwb,
+  getOrderCreateResult: getSpxOrderCreateResult,
+  isSpxConfigured,
+  spxOrderId,
+} = require('../services/spxClient');
+const {
+  GOOGLE_AWB_MODE,
+  isGoogleAwbConfigured,
+  syncAwbToGoogle,
+} = require('../services/googleAwbClient');
 
 const SHIPMENT_STATUSES = new Set(['pending', 'ready_to_ship', 'shipped', 'delivered', 'failed', 'cancelled']);
 
@@ -43,7 +56,11 @@ function normalizeAwbUrl(value) {
 
 async function shipmentById(id) {
   const result = await pool.query(
-    'SELECT *, scheduled_ship_date <= CURRENT_DATE AS is_due FROM shipments WHERE id = $1',
+    `SELECT sh.*, s.total_price_paid, s.plan_months,
+            sh.scheduled_ship_date <= CURRENT_DATE AS is_due
+     FROM shipments sh
+     JOIN subscriptions s ON s.id = sh.subscription_id
+     WHERE sh.id = $1`,
     [id]
   );
   const shipment = result.rows[0];
@@ -51,8 +68,75 @@ async function shipmentById(id) {
   return shipment;
 }
 
+async function syncShipmentAwbToGoogle(shipment) {
+  if (!isGoogleAwbConfigured()) {
+    return { success: false, skipped: true, shipment };
+  }
+  if (shipment.google_awb_sync_status === 'synced' && shipment.google_awb_url) {
+    return { success: true, already_exists: true, shipment };
+  }
+
+  const claimed = await pool.query(
+    `UPDATE shipments
+     SET google_awb_sync_status = 'syncing',
+         google_awb_error = NULL,
+         updated_at = NOW()
+     WHERE id = $1
+       AND (
+         COALESCE(google_awb_sync_status, 'not_synced') <> 'syncing'
+         OR updated_at < NOW() - INTERVAL '5 minutes'
+       )
+     RETURNING *`,
+    [shipment.id]
+  );
+  if (!claimed.rows[0]) {
+    return { success: true, already_processing: true, shipment: await shipmentById(shipment.id) };
+  }
+
+  try {
+    const googleResult = await syncAwbToGoogle(claimed.rows[0]);
+    const saved = await pool.query(
+      `UPDATE shipments
+       SET google_drive_file_id = $1,
+           google_awb_url = $2,
+           google_sheet_row_number = $3,
+           google_awb_sync_status = 'synced',
+           google_awb_synced_at = NOW(),
+           google_awb_error = NULL,
+           updated_at = NOW()
+       WHERE id = $4
+       RETURNING *`,
+      [
+        googleResult.driveFileId,
+        googleResult.driveUrl,
+        googleResult.sheetRow,
+        shipment.id,
+      ]
+    );
+    return { success: true, shipment: saved.rows[0] };
+  } catch (error) {
+    const failed = await pool.query(
+      `UPDATE shipments
+       SET google_awb_sync_status = 'failed',
+           google_awb_error = $1,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [String(error.message || 'Google AWB sync failed').slice(0, 500), shipment.id]
+    );
+    return { success: false, shipment: failed.rows[0] };
+  }
+}
+
 router.get('/integration-config', (req, res) => {
-  res.json({ oms_mode: OMS_MODE });
+  res.json({
+    oms_mode: OMS_MODE,
+    spx_mode: SPX_MODE,
+    spx_environment: SPX_ENVIRONMENT,
+    spx_configured: isSpxConfigured(),
+    google_awb_mode: GOOGLE_AWB_MODE,
+    google_awb_configured: isGoogleAwbConfigured(),
+  });
 });
 
 // GET /api/shipments?status=pending&from=2026-08-01&to=2026-08-31
@@ -283,6 +367,31 @@ router.post('/:id/sync-oms', asyncHandler(async (req, res) => {
     res.json({ success: true, shipment: result.rows[0] });
 }));
 
+// POST /api/shipments/:id/mark-packed
+// SellerCraft/Anchanto is a managed Shopify integration and currently does not
+// expose a status API to this app. In manual mode an operator uses this only
+// after Ninja Van confirms the parcel has actually been packed.
+router.post('/:id/mark-packed', asyncHandler(async (req, res) => {
+    if (OMS_MODE !== 'manual') throw httpError(409, 'Manual packed confirmation requires OMS_MODE=manual');
+    const shipment = await shipmentById(req.params.id);
+    if (!shipment.oms_order_id) throw httpError(409, 'Link the Shopify order before confirming packed');
+    if (!new Set(['submitted', 'picking', 'packed']).has(shipment.warehouse_status)) {
+      throw httpError(409, `A ${shipment.warehouse_status} warehouse order cannot be marked packed`);
+    }
+    const result = await pool.query(
+      `UPDATE shipments
+       SET warehouse_status = 'packed',
+           oms_packed_at = COALESCE(oms_packed_at, NOW()),
+           oms_last_synced_at = NOW(),
+           warehouse_error = NULL,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [shipment.id]
+    );
+    res.json({ success: true, shipment: result.rows[0] });
+}));
+
 // POST /api/shipments/:id/send-awb-to-oms
 router.post('/:id/send-awb-to-oms', asyncHandler(async (req, res) => {
     const shipment = await shipmentById(req.params.id);
@@ -307,6 +416,21 @@ router.post('/:id/send-awb-to-oms', asyncHandler(async (req, res) => {
       [omsResult.status, shipment.id]
     );
     res.json({ success: true, shipment: result.rows[0] });
+}));
+
+// POST /api/shipments/:id/sync-awb-google
+// Retries the automatic Drive upload and monitoring-sheet upsert without
+// creating another SPX order or AWB.
+router.post('/:id/sync-awb-google', asyncHandler(async (req, res) => {
+    if (!isGoogleAwbConfigured()) {
+      throw httpError(503, 'Google Drive and Sheets AWB integration is not fully configured');
+    }
+    const shipment = await shipmentById(req.params.id);
+    if (!shipment.spx_awb_url && !shipment.google_drive_file_id) {
+      throw httpError(409, 'Generate the SPX AWB before syncing it to Google');
+    }
+    const result = await syncShipmentAwbToGoogle(shipment);
+    res.json(result);
 }));
 
 // POST /api/shipments/:id/confirm-spx
@@ -335,6 +459,9 @@ router.post('/:id/confirm-spx', asyncHandler(async (req, res) => {
       `UPDATE shipments
        SET spx_tracking_number = $1,
            spx_awb_url = COALESCE($2, spx_awb_url),
+           spx_booking_status = CASE WHEN COALESCE($2, spx_awb_url) IS NULL THEN 'created' ELSE 'ready' END,
+           spx_last_synced_at = NOW(),
+           spx_error = NULL,
            spx_entry_created = true,
            spx_entry_date = COALESCE(spx_entry_date, NOW()),
            shipment_status = $3::varchar,
@@ -356,73 +483,168 @@ router.post('/:id/confirm-spx', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/shipments/:id/create-spx
-// NOTE: This assumes SPX has an API. The dashboard currently uses the
-// official Excel-template export above for manual "Import to Mass Edit".
+// API 1.4 is asynchronous: this stores the returned batch number. The caller
+// then uses sync-spx to retrieve the tracking number and AWB.
 router.post('/:id/create-spx', asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    if (!process.env.SPX_API_BASE_URL || !process.env.SPX_API_KEY) {
-      throw httpError(503, 'SPX integration is not configured');
-    }
-    const shipResult = await pool.query('SELECT * FROM shipments WHERE id = $1', [id]);
-    const shipment = shipResult.rows[0];
-
-    if (!shipment) {
-      return res.status(404).json({ error: 'Shipment not found' });
-    }
+    if (!isSpxConfigured()) throw httpError(503, 'Direct SPX API integration is not fully configured');
+    const shipment = await shipmentById(req.params.id);
     if (shipment.warehouse_status !== 'packed') {
       throw httpError(409, 'SPX can only be booked after the warehouse confirms packed');
     }
-    if (shipment.spx_entry_created && shipment.spx_tracking_number) {
-      return res.json({ success: true, tracking_number: shipment.spx_tracking_number, already_exists: true });
+    if (shipment.shipment_status !== 'pending') {
+      throw httpError(409, `A ${shipment.shipment_status} shipment cannot create an SPX booking`);
+    }
+    if (shipment.spx_batch_no) {
+      return res.json({ success: true, shipment, already_exists: true });
     }
 
-    const address = shipment.shipping_address || {};
-
-    // --- Placeholder SPX API call. Confirm actual endpoint/fields with SPX. ---
-    const spxResponse = await axios.post(
-      `${process.env.SPX_API_BASE_URL}/shipments`,
-      {
-        sender: {
-          name: 'b&b BEAU+',
-          phone: process.env.WAREHOUSE_PHONE || '',
-          address: process.env.WAREHOUSE_ADDRESS || ''
-        },
-        receiver: {
-          name: shipment.customer_name,
-          phone: shipment.customer_phone,
-          address: `${address.address1 || ''}, ${address.city || ''}, ${address.province || ''}`
-        },
-        parcel: {
-          weight_grams: 200,
-          description: shipment.product_name
-        }
-      },
-      { headers: { Authorization: `Bearer ${process.env.SPX_API_KEY}` } }
-    );
-
-    const trackingNumber = spxResponse.data?.tracking_number;
-    if (!trackingNumber) {
-      throw httpError(502, 'SPX did not return a tracking number');
-    }
-
-    const updateResult = await pool.query(
+    const claimed = await pool.query(
       `UPDATE shipments
-       SET spx_tracking_number = $1, spx_entry_created = true,
-           spx_entry_date = NOW(), shipment_status = 'shipped',
-           actual_ship_date = CURRENT_DATE, updated_at = NOW()
-       WHERE id = $2`,
-      [trackingNumber, id]
+       SET spx_booking_status = 'creating', spx_error = NULL, spx_last_synced_at = NOW(), updated_at = NOW()
+       WHERE id = $1
+         AND spx_batch_no IS NULL
+         AND COALESCE(spx_booking_status, 'not_created') <> 'creating'
+       RETURNING id`,
+      [shipment.id]
     );
-    if (updateResult.rowCount === 0) throw httpError(404, 'Shipment not found');
-
-    if (shipment.customer_phone) {
-      await sendSMS(
-        shipment.customer_phone,
-        `Hi! Your b&b BEAU+ shipment ${shipment.shipment_number}/${shipment.total_shipments} is on the way. Track: ${trackingNumber}`
-      );
+    if (!claimed.rows[0]) {
+      return res.json({ success: true, shipment: await shipmentById(shipment.id), already_processing: true });
     }
 
-    res.json({ success: true, tracking_number: trackingNumber });
+    try {
+      const created = await createSpxOrder(shipment);
+      const result = await pool.query(
+        `UPDATE shipments
+         SET spx_batch_no = $1,
+             spx_order_id = $2,
+             spx_booking_status = 'submitted',
+             spx_last_synced_at = NOW(),
+             spx_error = NULL,
+             updated_at = NOW()
+         WHERE id = $3
+         RETURNING *`,
+        [created.batchNo, created.orderId, shipment.id]
+      );
+      return res.json({ success: true, shipment: result.rows[0] });
+    } catch (error) {
+      await pool.query(
+        `UPDATE shipments
+         SET spx_booking_status = 'failed', spx_error = $1, spx_last_synced_at = NOW(), updated_at = NOW()
+         WHERE id = $2 AND spx_batch_no IS NULL`,
+        [String(error.message || 'SPX order creation failed').slice(0, 500), shipment.id]
+      );
+      throw error;
+    }
+}));
+
+// POST /api/shipments/:id/sync-spx
+// Polls API 1.5 until order creation is done, then API 1.6 until the AWB link
+// is ready. Each click performs one bounded poll; no request sleeps or blocks.
+router.post('/:id/sync-spx', asyncHandler(async (req, res) => {
+    if (!isSpxConfigured()) throw httpError(503, 'Direct SPX API integration is not fully configured');
+    let shipment = await shipmentById(req.params.id);
+    if (!shipment.spx_batch_no) throw httpError(409, 'Create the SPX order before checking its result');
+    const hadTracking = Boolean(shipment.spx_tracking_number);
+
+    try {
+      if (!shipment.spx_tracking_number) {
+        const orderResult = await getSpxOrderCreateResult(
+          shipment.spx_batch_no,
+          shipment.spx_order_id || spxOrderId(shipment)
+        );
+        if (orderResult.state === 'failed') {
+          const failed = await pool.query(
+            `UPDATE shipments
+             SET spx_booking_status = 'failed', spx_error = $1,
+                 spx_last_synced_at = NOW(), updated_at = NOW()
+             WHERE id = $2 RETURNING *`,
+            [orderResult.error.slice(0, 500), shipment.id]
+          );
+          return res.json({ success: false, shipment: failed.rows[0] });
+        }
+        if (orderResult.state === 'processing') {
+          const processing = await pool.query(
+            `UPDATE shipments
+             SET spx_booking_status = 'processing', spx_error = NULL,
+                 spx_last_synced_at = NOW(), updated_at = NOW()
+             WHERE id = $1 RETURNING *`,
+            [shipment.id]
+          );
+          return res.json({ success: true, shipment: processing.rows[0] });
+        }
+
+        const trackingNumber = normalizeTrackingNumber(orderResult.trackingNumber);
+        const tracked = await pool.query(
+          `UPDATE shipments
+           SET spx_tracking_number = $1,
+               spx_entry_created = true,
+               spx_entry_date = COALESCE(spx_entry_date, NOW()),
+               spx_booking_status = 'created',
+               shipment_status = 'ready_to_ship',
+               spx_error = NULL,
+               spx_last_synced_at = NOW(),
+               updated_at = NOW()
+           WHERE id = $2 RETURNING *`,
+          [trackingNumber, shipment.id]
+        );
+        shipment = tracked.rows[0];
+      }
+
+      if (!shipment.spx_awb_url) {
+        const awbResult = await getSpxAwb(shipment.spx_batch_no);
+        if (awbResult.state === 'failed') {
+          const failed = await pool.query(
+            `UPDATE shipments
+             SET spx_booking_status = 'failed', spx_error = $1,
+                 spx_last_synced_at = NOW(), updated_at = NOW()
+             WHERE id = $2 RETURNING *`,
+            [awbResult.error.slice(0, 500), shipment.id]
+          );
+          return res.json({ success: false, shipment: failed.rows[0] });
+        }
+        if (awbResult.state === 'processing') {
+          const processing = await pool.query(
+            `UPDATE shipments
+             SET spx_booking_status = 'awb_processing', spx_error = NULL,
+                 spx_last_synced_at = NOW(), updated_at = NOW()
+             WHERE id = $1 RETURNING *`,
+            [shipment.id]
+          );
+          shipment = processing.rows[0];
+        } else {
+          const awbUrl = normalizeAwbUrl(awbResult.awbUrl);
+          const ready = await pool.query(
+            `UPDATE shipments
+             SET spx_awb_url = $1, spx_booking_status = 'ready', spx_error = NULL,
+                 spx_last_synced_at = NOW(), updated_at = NOW()
+             WHERE id = $2 RETURNING *`,
+            [awbUrl, shipment.id]
+          );
+          shipment = ready.rows[0];
+        }
+      }
+
+      if (shipment.spx_awb_url && isGoogleAwbConfigured()) {
+        const googleResult = await syncShipmentAwbToGoogle(shipment);
+        shipment = googleResult.shipment;
+      }
+
+      if (!hadTracking && shipment.spx_tracking_number && shipment.customer_phone && SPX_ENVIRONMENT !== 'uat') {
+        await sendSMS(
+          shipment.customer_phone,
+          `Hi! SPX tracking for b&b BEAU+ shipment ${shipment.shipment_number}/${shipment.total_shipments}: ${shipment.spx_tracking_number}. Track at https://spx.ph/track`
+        );
+      }
+      return res.json({ success: true, shipment });
+    } catch (error) {
+      await pool.query(
+        `UPDATE shipments
+         SET spx_error = $1, spx_last_synced_at = NOW(), updated_at = NOW()
+         WHERE id = $2`,
+        [String(error.message || 'SPX status check failed').slice(0, 500), shipment.id]
+      );
+      throw error;
+    }
 }));
 
 // PATCH /api/shipments/:id  (manual status override, e.g. mark delivered/failed)

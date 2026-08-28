@@ -1,458 +1,213 @@
-# b&b BEAU+ Subscription System Setup Guide
+# B&B BEAU+ Subscription System Setup Guide
 
-**Date:** August 6, 2026  
-**Status:** Webhook connected, backend deployed, Supabase configured  
-**Next Step:** Test order creation and build dashboard UI
+**Updated:** August 22, 2026
 
----
+**Status:** Shopify admin and backend workflow implemented; SPX UAT account and
+API access verified. SellerCraft/Anchanto SKU mapping and end-to-end order tests
+still require coordination with Ninja Van.
 
-## Project Overview
+## System purpose
 
-**Goal:** Replace Recharge with a custom prepaid subscription system for b&b BEAU+.
+The store sells two ordinary products and two prepaid monthly-delivery products.
+Customers pay the complete plan price through the normal Shopify checkout. The
+custom app records only prepaid plan purchases and schedules their deliveries.
 
-**Model:** Customers pay upfront for a bundle (1/3/6/12 months). Backend auto-generates one shipment per month, every 30 days.
+Current variant rules:
 
-**Tech Stack:**
-- Frontend: Shopify + custom Liquid widget
-- Backend: Node.js + Express
-- Database: Supabase (Postgres)
-- Payment: PayMongo (handled by Shopify)
-- Fulfillment: SPX Express PH (integration pending)
-- SMS: Semaphore (configured but not yet live)
+- Ordinary variants: `7 Sachets`, `14 Sachets`, and `28 Sachets`. These remain
+  normal Shopify orders and must not create subscriptions.
+- Prepaid variants: titles beginning with `1-Month Plan`, `3-Month Plan`,
+  `6-Month Plan`, or `12-Month Plan`. These create 1, 3, 6, or 12 scheduled
+  shipments.
+- SKU codes are used for SellerCraft/Anchanto mapping and Shopify variant
+  resolution. They may change, so recurrence is determined by variant title,
+  not SKU.
 
----
+## Current architecture
 
-## Architecture Flow
+```text
+Customer checks out in Shopify
+        |
+        +--> SellerCraft OMS imports the Shopify order
+        |        |
+        |        +--> Anchanto WMS receives it for picking and packing
+        |
+        +--> Signed Shopify webhook reaches the Express backend
+                 |
+                 +--> ordinary variant: ignored by subscription system
+                 |
+                 +--> prepaid plan: subscription + calendar-month schedule
 
-```
-Customer Selects Plan
-    ↓
-Shopify Checkout (PayMongo)
-    ↓
-Order Created → Shopify webhook fires
-    ↓
-POST /webhooks/orders/create
-    ↓
-Backend verifies HMAC signature (security)
-    ↓
-Parse variant title to extract months (1/3/6/12)
-    ↓
-Insert into `subscriptions` table (1 row)
-Insert into `shipments` table (N rows, one per month)
-    ↓
-Dashboard queries: "What's due today?"
-    ↓
-Backend team clicks "Create SPX Entry"
-    ↓
-SPX label generated, tracking sent to customer via SMS
-```
+Shipment 1: link the original Shopify checkout order
+Shipment 2+: create a tagged, zero-value Shopify delivery order
+        |
+SellerCraft imports the due order -> Anchanto packs it
+        |
+After packed confirmation, book SPX and receive tracking/AWB
+        |
+Archive the AWB in Google Drive and upsert the Ninja Van monitoring Sheet
 
----
-
-## What's Already Done ✅
-
-### 1. Shopify Product Setup ✅
-- Created product with 4 variants:
-  - "1 Month Subscription"
-  - "3 Months (Monthly Deliveries)"
-  - "6 Months (Monthly Deliveries)"
-  - "12 Months (Monthly Deliveries)"
-- Prices set to full prepaid totals:
-  - 1 month: ₱4,399.00
-  - 3 months: ₱13,095.00
-  - 6 months: ₱25,650.00
-  - 12 months: ₱48,600.00
-
-### 2. Product Page Widget ✅
-- Custom Liquid code displays 4 plan cards
-- Card titles static ("1 Month Plan", "3 Months Plan", etc.)
-- Clicking a card selects the variant
-- "Subscribe Now" button adds to cart → redirects to checkout
-- Shows "Starts at" on 1-month, "/month" pricing on others
-
-**File:** `subscription-widget-simplified.liquid`
-
-### 3. Backend Deployed ✅
-- Node.js + Express running on Render
-- URL: `https://shopify-subscription-backend.onrender.com`
-- Health check: `GET /health` returns `{"status":"ok"}`
-
-### 4. Database Configured ✅
-- Supabase project created (Singapore region)
-- Schema applied (subscriptions + shipments tables)
-- SSL enabled for Render → Supabase connection
-- Tables ready to receive order data
-
-### 5. Shopify Webhook Registered ✅
-- Event: "Order creation"
-- URL: `https://shopify-subscription-backend.onrender.com/webhooks/orders/create`
-- API Version: 2026-10 (release candidate)
-- Signing secret saved to Render env var `SHOPIFY_WEBHOOK_SECRET`
-
-### 6. Environment Variables Set ✅
-In Render dashboard:
-```
-DATABASE_URL=postgresql://postgres:...@db.*.supabase.co:5432/postgres
-NODE_ENV=production
-PORT=3000
-SHOPIFY_WEBHOOK_SECRET=your_webhook_signing_secret
-SHOPIFY_STORE_DOMAIN=g892i7-7c-sp.myshopify.com
-SPX_API_BASE_URL=https://api.spx.com.ph
-SPX_API_KEY=your_spx_api_key (placeholder)
-SMS_API_KEY=your_sms_provider_key (placeholder)
-SMS_SENDER_NAME=b&bBEAUplus
+Notify the warehouse for printing and pickup preparation
+        |
+SPX performs last-mile delivery and supplies customer tracking
 ```
 
----
+SellerCraft is the OMS connector, Anchanto is Ninja Van's WMS, and SPX is the
+selected last-mile courier. Ninja Van has confirmed SPX is not currently
+integrated with Anchanto, so the app/shipper must arrange SPX booking and provide
+the AWB to the warehouse.
 
-## Database Schema
+## Implemented components
 
-### `subscriptions` table
-Stores one row per customer purchase.
+- Shopify embedded admin pages: Overview, Shipments, and Subscriptions.
+- Shopify session authentication and server-only backend proxy.
+- Theme app block for selecting prepaid plan variants before Shopify checkout.
+- Raw-body Shopify HMAC verification and duplicate-order protection.
+- Strict variant-title detection that ignores ordinary sachet variants.
+- Calendar-month schedule generation in PostgreSQL/Supabase.
+- Shipment 1 linking to the original checkout order.
+- Retryable, tagged zero-value Shopify orders for shipment 2 onward.
+- Manual Ninja Van packed confirmation for the managed SellerCraft connection,
+  plus mock OMS/WMS progression for isolated testing.
+- Signed SPX API 1.4 batch order submission, API 1.5 tracking retrieval, and API
+  1.6 AWB retrieval.
+- SPX UAT address isolation so real customer addresses are never sent to UAT.
+- SPX mass-order Excel generation only after warehouse status is `packed`.
+- Manual SPX tracking and optional HTTPS AWB PDF recording.
+- Optional automatic Drive archival and retry-safe Google Sheet upsert after
+  SPX API 1.6 completes.
+- AWB handoff state, Shopify fulfillment action, manual status changes, and
+  subscription cancellation.
 
-| Column | Type | Purpose |
-|---|---|---|
-| id | INT PK | Unique ID |
-| order_id | VARCHAR(50) | Shopify order ID |
-| order_name | VARCHAR(50) | Human-readable order name (#1001) |
-| customer_id | VARCHAR(50) | Shopify customer ID |
-| customer_email | VARCHAR(150) | For receipts/notifications |
-| customer_phone | VARCHAR(20) | For SMS shipment alerts |
-| shipping_address | JSONB | Full address object |
-| product_name | VARCHAR(200) | "b&b BEAU+ Gut + Energy" |
-| variant_title | VARCHAR(150) | "6 Months (Monthly Deliveries)" |
-| total_price_paid | DECIMAL(10,2) | ₱25,650.00 |
-| plan_months | INT | 1, 3, 6, or 12 |
-| payment_date | TIMESTAMP | When order was created |
-| subscription_start_date | TIMESTAMP | Same as payment_date |
-| subscription_end_date | TIMESTAMP | Calculated: start + N months |
-| subscription_status | VARCHAR(20) | active, paused, cancelled, completed |
-| created_at | TIMESTAMP | Record created time |
-| updated_at | TIMESTAMP | Last updated |
+## Required configuration
 
-### `shipments` table
-Stores one row per monthly shipment obligation.
+### Frontend service
 
-| Column | Type | Purpose |
-|---|---|---|
-| id | INT PK | Unique ID |
-| subscription_id | INT FK | Link to subscriptions |
-| order_id | VARCHAR(50) | Shopify order ID (denorm for queries) |
-| customer_id | VARCHAR(50) | For filtering |
-| customer_name | VARCHAR(150) | Full name |
-| customer_email | VARCHAR(150) | For email receipts |
-| customer_phone | VARCHAR(20) | For SMS |
-| shipping_address | JSONB | Full address |
-| product_name | VARCHAR(200) | What we're shipping |
-| shipment_number | INT | 1 of 6, 2 of 6, etc. |
-| total_shipments | INT | How many total shipments expected |
-| scheduled_ship_date | DATE | When to ship (TODAY or future) |
-| actual_ship_date | DATE | When it was actually shipped |
-| spx_tracking_number | VARCHAR(50) | SPX tracking code |
-| shipment_status | VARCHAR(20) | pending, ready_to_ship, shipped, delivered, failed, cancelled |
-| spx_entry_created | BOOLEAN | Whether SPX entry exists |
-| spx_entry_date | TIMESTAMP | When SPX entry was created |
-| notes | TEXT | Manual notes (delivery issues, etc.) |
-| created_at | TIMESTAMP | Record created time |
-| updated_at | TIMESTAMP | Last updated |
+Set the values documented in `subscription-frontend/.env.example`. Important
+items are the Shopify app credentials and URL, the Express backend URL, and the
+private shared API key.
 
----
+Required Shopify scopes:
 
-## API Endpoints
-
-### Webhooks
-**POST** `/webhooks/orders/create`
-- Called by Shopify automatically when order created
-- Requires HMAC signature verification
-- Inserts into subscriptions + generates shipments
-- No response needed (fires async)
-
-### Shipments Management
-
-**GET** `/api/shipments/due-today`
-- Returns all pending shipments with scheduled_ship_date ≤ TODAY
-- **Use:** Main dashboard view
-- Response: Array of shipment rows
-
-**GET** `/api/shipments?status=pending&from=2026-08-01&to=2026-08-31`
-- Filters by status, date range, customer email
-- Response: Array of shipment rows
-
-**GET** `/api/shipments/subscriptions/:id`
-- All shipments for one subscription (to see the full schedule)
-- Response: Array of shipment rows
-
-**POST** `/api/shipments/:id/create-spx`
-- Creates SPX shipping entry, saves tracking number, updates status
-- Sends SMS to customer with tracking
-- Response: `{"success": true, "tracking_number": "SPX-..."}`
-
-**PATCH** `/api/shipments/:id`
-- Manually update shipment status, notes, or tracking number
-- Body: `{"status": "delivered", "notes": "Left with security guard"}`
-- Response: `{"success": true}`
-
-### Subscriptions Management
-
-**GET** `/api/subscriptions?status=active&email=customer@gmail.com`
-- Look up subscriptions by status or customer email
-- Response: Array of subscription rows
-
-**PATCH** `/api/subscriptions/:id/cancel`
-- Cancels subscription + marks all pending shipments as cancelled
-- Response: `{"success": true}`
-
----
-
-## How the Backend Processes an Order
-
-**Step 1: Shopify fires webhook**
-```
-POST https://shopify-subscription-backend.onrender.com/webhooks/orders/create
-Body: { order object with line_items, customer, shipping_address, etc. }
-Header: X-Shopify-Hmac-Sha256: [signature]
+```text
+read_products,read_orders,write_orders,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders
 ```
 
-**Step 2: Backend verifies signature** (`verifyShopifyWebhook.js`)
-```javascript
-const generatedHash = crypto
-  .createHmac('sha256', SHOPIFY_WEBHOOK_SECRET)
-  .update(raw_body)
-  .digest('base64');
+Deploy Shopify configuration and the theme extension with:
 
-if (generatedHash !== header_signature) reject; // forged webhook
+```powershell
+npm run deploy -- --config bb-subscription-dashboard
 ```
 
-**Step 3: Parse variant title** (`shopifyOrders.js`)
-```javascript
-const variantTitle = "6 Months (Monthly Deliveries)";
-const monthsMatch = variantTitle.match(/(\d+)/);
-const planMonths = parseInt(monthsMatch[1]); // → 6
+### Backend service
+
+Set the values documented in `.env.example`. `DASHBOARD_API_KEY` must exactly
+match the frontend's `SUBSCRIPTION_API_KEY`. Use `OMS_MODE=manual` for the
+current managed SellerCraft/Anchanto integration. Set `SPX_MODE=api` only after
+all required SPX values in `.env.example` are configured.
+
+The backend startup command applies the backward-compatible statements in
+`schema.sql` before serving requests.
+
+For UAT, use `SPX_ENVIRONMENT=uat` and
+`SPX_API_BASE_URL=https://test-stable.spx.ph`. The service automatically uses
+the approved Amsic-to-Agsam address profile. Configure only test phone numbers
+and SPX-confirmed postal codes; never use real customer data in UAT.
+
+## SellerCraft and Anchanto setup
+
+Ninja Van's team manages the SellerCraft account/connection. They requested
+Shopify access to products, orders, inventory, and locations. Use a dedicated
+staff account or custom role rather than sharing the store owner's password when
+possible.
+
+Before placing a test order:
+
+1. Assign a unique SKU to the chosen test variant.
+2. Ask Ninja Van to confirm that SKU is synchronized and mapped in both
+   SellerCraft and Anchanto.
+3. Confirm the invited staff account has been accepted; `Pending` means access
+   is not active yet.
+4. Create one Shopify test order only after mapping is confirmed.
+5. Verify Shopify -> SellerCraft OMS -> Anchanto WMS.
+6. Have the warehouse mark the order packed and verify that fulfillment status
+   returns through SellerCraft to Shopify.
+
+## SPX status and testing
+
+SPX supplied UAT app credentials and documentation. Keep all real credentials
+only in local or hosted environment variables; never paste them into Git or
+documentation.
+
+The separate `spx-test` client:
+
+- matches SPX's published HMAC-SHA256 signature test vector;
+- sends `app-id`, `timestamp`, `random-num`, and `check-sign` headers;
+- preserves the exact signed JSON body and `int64` user IDs;
+- successfully created and verified the SPX UAT user account.
+
+The app now follows SPX's asynchronous order flow:
+
+1. Wait for Ninja Van to confirm Anchanto has packed the shipment.
+2. In `OMS_MODE=manual`, click **Confirm Ninja Van packed**.
+3. Submit API 1.4; the app stores the returned SPX batch number.
+4. Check API 1.5 until the task is done and a tracking number is returned.
+5. Check API 1.6 until the AWB PDF link is ready.
+6. When Google AWB sync is configured, the backend downloads the temporary SPX
+   PDF, stores it in Drive, and upserts the monitoring row by shipment ID.
+7. Notify Ninja Van and mark the AWB shared only after the warehouse can access
+   the Drive PDF.
+
+Excel export and manual tracking confirmation remain available as fallbacks.
+UAT defaults to drop-off because pickup requires API 1.1 timeslot values. Live
+pickup must not be enabled until Ninja Van supplies the warehouse sender details
+and the pickup-timeslot flow is implemented and verified.
+
+## Verification commands
+
+Backend:
+
+```powershell
+npm test
+npm run migrate
 ```
 
-**Step 4: Calculate dates**
-```javascript
-const orderDate = new Date("2026-08-06");
-const endDate = new Date(orderDate);
-endDate.setMonth(endDate.getMonth() + 6); // → 2027-02-06
+Frontend:
+
+```powershell
+npm run typecheck
+npm run lint
+npm run build
 ```
 
-**Step 5: Insert subscription row**
-```sql
-INSERT INTO subscriptions
-  (order_id, customer_email, variant_title, plan_months, 
-   subscription_start_date, subscription_end_date, ...)
-VALUES (#1002, user@gmail.com, "6 Months...", 6, 
-        2026-08-06, 2027-02-06, ...)
-RETURNING id → 42
+SPX signing client:
+
+```powershell
+npm test
 ```
 
-**Step 6: Generate 6 shipment rows** (loop i=0 to 5)
-```sql
-INSERT INTO shipments
-  (subscription_id, shipment_number, total_shipments, scheduled_ship_date, ...)
-VALUES (42, 1, 6, 2026-08-06, 'pending'),
-       (42, 2, 6, 2026-09-05, 'pending'),
-       (42, 3, 6, 2026-10-05, 'pending'),
-       (42, 4, 6, 2026-11-04, 'pending'),
-       (42, 5, 6, 2026-12-04, 'pending'),
-       (42, 6, 6, 2027-01-03, 'pending')
-```
+Do not run `npm run create-account` as a routine test because it performs a live
+UAT mutation.
 
-**Step 7: Respond to Shopify**
-```
-200 OK
-```
+## Known limitations
 
-Shopify just needs confirmation the webhook was received. All real work happens after.
+- The system is currently single-store and backend records are not shop-scoped.
+- Only the first matching prepaid line item in an order creates a subscription;
+  carts with multiple prepaid lines need additional modeling.
+- The webhook does not yet enforce paid financial status.
+- SellerCraft/Anchanto exposes no direct API to this app, so packed and AWB-shared
+  states are operator-confirmed in `OMS_MODE=manual`.
+- Live SPX pickup still needs API 1.1 timeslot selection and Ninja Van's complete
+  warehouse sender information.
+- Each recurring plan SKU must be mapped in Anchanto to the correct physical
+  monthly pack; different 1/3/6/12-month SKUs do not automatically share stock.
+- SMS provider behavior has not been production-verified.
+- Dashboard list endpoints do not yet paginate.
 
----
+## Security reminders
 
-## Current Issues / Placeholders
-
-### 1. SPX Integration ⚠️ PENDING
-We don't have confirmed SPX API documentation. Two possibilities:
-
-**Option A: SPX has a REST API**
-- Contact SPX: ask for API docs + merchant credentials
-- Update `src/routes/shipments.js` → `create-spx` endpoint with real request/response format
-- Currently written as a guess based on typical courier APIs
-
-**Option B: SPX uses Excel imports**
-- Use the implemented one-sheet `.xlsx` export
-- The workbook contains only the 21 SPX "Import to Mass Edit" columns; it does not copy the template's guide or lookup tabs
-- Your team downloads it daily, uploads to SPX portal manually
-- Slightly more work, but many PH couriers only offer this
-
-**Action:** Contact SPX support and ask: "Do you have a merchant API for creating shipments, or should we continue using the official Excel mass-order upload?"
-
-### 2. SMS Notifications ⚠️ PLACEHOLDER
-Code references `SMS_API_KEY` and `SMS_SENDER_NAME` but doesn't actually send yet.
-
-Currently: `sendSMS()` logs "[SMS SKIPPED]" and returns success.
-
-**To activate:**
-1. Sign up for Semaphore (semaphore.co) — popular PH SMS API
-2. Get API key
-3. Update Render env var: `SMS_API_KEY=your_key`
-4. Update `src/utils/sms.js` with real Semaphore API call (already has stub)
-5. When backend creates SPX entry, SMS is sent automatically
-
-### 3. Webhook Signature Verification ✅ DONE
-Unlike the placeholders above, HMAC verification is **fully implemented and required**. This prevents anyone from faking orders by posting to your webhook URL.
-
----
-
-## Testing Workflow
-
-### Test 1: Backend is Reachable
-```bash
-curl https://shopify-subscription-backend.onrender.com/health
-```
-Expected response:
-```json
-{"status":"ok","time":"2026-08-06T12:34:56.789Z"}
-```
-
-### Test 2: Database Connection Works
-Go to **Supabase → SQL Editor → New query**:
-```sql
-SELECT COUNT(*) as total_subscriptions FROM subscriptions;
-```
-Should return `0` initially (no orders yet).
-
-### Test 3: Webhook Receives Orders
-1. Go to your Shopify store
-2. Add a subscription product to cart (pick "3 Months Plan")
-3. Checkout with test card
-4. Complete order
-
-Expected: Order appears in both tables:
-- `subscriptions`: 1 row (the full 3-month purchase)
-- `shipments`: 3 rows (one shipment per month)
-
-### Test 4: Dashboard API
-Once orders exist, test the API:
-```bash
-curl https://shopify-subscription-backend.onrender.com/api/shipments/due-today
-```
-Should return array of shipments with today's scheduled_ship_date.
-
----
-
-## Deployment Status
-
-| Component | Status | URL |
-|---|---|---|
-| Shopify Product | ✅ Live | https://beauplus.co/products/b-b-beau-gut-energy-testing |
-| Widget Code | ✅ Active | On product page |
-| Backend | ✅ Deployed | https://shopify-subscription-backend.onrender.com |
-| Database | ✅ Connected | Supabase Singapore region |
-| Webhook | ✅ Registered | Order creation → backend |
-| Dashboard UI | ⬜ Not built | React/Retool needed |
-| SPX Integration | ⚠️ Pending | Awaiting API confirmation |
-| SMS | ⚠️ Placeholder | SMS_API_KEY set, waiting to activate |
-
----
-
-## Next Steps (Priority Order)
-
-### 1. Confirm Test Order Works (TODAY)
-- Create a test order in your Shopify store
-- Check that `subscriptions` and `shipments` rows appear in Supabase
-- If they do: **webhook is working perfectly** ✅
-
-### 2. Confirm SPX Path (THIS WEEK)
-- Email/contact SPX: "Do you have a merchant API?"
-- If YES: give me their API docs, I'll update the backend
-- If NO: continue using the implemented one-sheet Excel export
-
-### 3. Build Dashboard UI (NEXT WEEK)
-Options (in order of speed):
-- **Retool** (~1-2 days): drag-and-drop, connects to your API, no code needed
-- **Budibase** (~1-2 days): similar to Retool, free open-source option
-- **Custom React** (~1-2 weeks): full control, but slower
-
-Dashboard should display:
-- Table of shipments due today/this week
-- Filter by status, date, customer
-- "Create SPX Entry" button for each row
-- "Mark as Delivered" / "Mark as Failed" buttons
-- Link to SPX tracking if available
-
-### 4. Activate SMS (AFTER INITIAL LAUNCH)
-- Sign up Semaphore
-- Add API key to Render env vars
-- Test sends
-
-### 5. Test End-to-End
-Once the SPX API or Excel workflow is confirmed and the dashboard is built:
-- Create a real test order
-- See it in dashboard
-- Create SPX entry manually
-- Customer should receive SMS with tracking
-
----
-
-## Code Files Reference
-
-**Backend (Node.js + Express):**
-- `src/index.js` — Main server entry, route setup
-- `src/db.js` — Supabase connection pooling
-- `src/webhooks/shopifyOrders.js` — Order creation handler
-- `src/routes/shipments.js` — Shipment APIs + SPX creation
-- `src/routes/subscriptions.js` — Subscription lookups
-- `src/utils/verifyShopifyWebhook.js` — HMAC signature check (security)
-- `src/utils/sms.js` — SMS sender stub
-- `schema.sql` — Database tables + indexes
-
-**Frontend (Shopify Liquid):**
-- `subscription-widget-simplified.liquid` — Product page widget
-
----
-
-## Troubleshooting
-
-### No data appears in Supabase after creating an order
-1. Check Render logs for errors (especially `connect ENETUNREACH` = DB connection failed)
-2. Verify `DATABASE_URL` and `SHOPIFY_WEBHOOK_SECRET` are set in Render
-3. Verify webhook URL in Shopify matches exactly: `/webhooks/orders/create`
-4. Check Shopify Admin → **Settings → Notifications → Webhooks** → click the webhook to see recent deliveries + errors
-
-### Backend times out
-- Check Render → Project → Metrics (CPU/memory usage)
-- If high: need to upgrade Render plan or optimize queries
-- Check database connection pooling in `db.js` — defaults are fine for MVP
-
-### Webhook says "⚠️ Missing HMAC header"
-- `SHOPIFY_WEBHOOK_SECRET` is not in Render env vars
-- Or the value was miscopied
-- Go back to Shopify webhook page, copy the secret again, re-paste into Render
-
----
-
-## Support / Questions
-
-If something breaks:
-1. **Check Render logs first** — 90% of issues show up there
-2. **Verify env vars are set** — DATABASE_URL, SHOPIFY_WEBHOOK_SECRET
-3. **Test `/health` endpoint** — proves backend is running
-4. **Create a test order** — proves webhook is connected
-5. **Query Supabase directly** — confirms database is accessible
-
----
-
-## Key Decisions Made
-
-1. **Custom backend instead of Recharge** → saves $25/month, full control, fits prepaid model better
-2. **Supabase instead of local Postgres** → zero DevOps, auto-scaling, cheaper than RDS
-3. **Render for deployment** → simplest GitHub integration, cheapest Node.js hosting
-4. **30-day intervals for shipments** → matches "monthly deliveries" promise to customers
-5. **HMAC webhook verification** → prevents order spoofing attacks
-6. **Prepaid totals stored, per-month prices calculated** → honest billing, no recurring charges
-
----
-
-**Document Version:** 1.0  
-**Last Updated:** August 6, 2026  
-**Status:** Webhook + backend live, awaiting SPX + dashboard
+- Never send store-owner passwords, Shopify tokens, Shopify client secrets, SPX
+  secrets, or customer data in public group chats.
+- Rotate any token or secret exposed in a screenshot or message.
+- Keep `.env` files out of Git and use different secrets for Shopify, dashboard
+  authentication, SPX, OMS/WMS, and SMS.

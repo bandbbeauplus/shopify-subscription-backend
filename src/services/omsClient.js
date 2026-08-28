@@ -1,7 +1,7 @@
 const axios = require('axios');
 const httpError = require('../utils/httpError');
 
-const OMS_MODE = process.env.OMS_MODE || 'mock';
+const OMS_MODE = process.env.OMS_MODE || 'manual';
 
 function externalReference(shipment) {
   return `BB-${shipment.order_id}-${shipment.shipment_number}`.slice(0, 64);
@@ -75,8 +75,9 @@ function resolvePath(template, orderId) {
 
 async function createFulfillmentOrder(shipment) {
   const reference = externalReference(shipment);
-  if (OMS_MODE === 'mock') {
-    return { orderId: `MOCK-${reference}`, reference, status: 'submitted' };
+  if (OMS_MODE === 'mock' || OMS_MODE === 'manual') {
+    const prefix = OMS_MODE === 'mock' ? 'MOCK' : 'SHOPIFY';
+    return { orderId: `${prefix}-${reference}`, reference, status: 'submitted' };
   }
 
   const response = await apiClient().post(
@@ -98,6 +99,9 @@ async function getFulfillmentStatus(shipment) {
     const next = { submitted: 'picking', picking: 'packed', packed: 'packed' };
     return { status: next[shipment.warehouse_status] || shipment.warehouse_status };
   }
+  if (OMS_MODE === 'manual') {
+    throw httpError(409, 'Ninja Van warehouse status must be confirmed manually because no Anchanto status API is connected');
+  }
 
   const template = process.env.OMS_ORDER_STATUS_PATH || '/orders/{order_id}';
   const response = await apiClient().get(resolvePath(template, shipment.oms_order_id));
@@ -108,15 +112,16 @@ async function getFulfillmentStatus(shipment) {
 
 async function sendAwb(shipment) {
   if (!shipment.spx_tracking_number) throw httpError(409, 'Create the SPX booking before sending the AWB');
-  if (!shipment.spx_awb_url && OMS_MODE !== 'mock') throw httpError(409, 'A PDF AWB URL is required in OMS API mode');
+  const awbUrl = shipment.google_awb_url || shipment.spx_awb_url;
+  if (!awbUrl && OMS_MODE !== 'mock') throw httpError(409, 'A PDF AWB URL is required before warehouse handoff');
 
-  if (OMS_MODE === 'mock') return { status: 'awb_sent' };
+  if (OMS_MODE === 'mock' || OMS_MODE === 'manual') return { status: 'awb_sent' };
 
   const template = process.env.OMS_AWB_PATH || '/orders/{order_id}/awb';
   await apiClient().post(resolvePath(template, shipment.oms_order_id), {
     courier: 'SPX Express',
     tracking_number: shipment.spx_tracking_number,
-    awb_pdf_url: shipment.spx_awb_url,
+    awb_pdf_url: awbUrl,
   });
   return { status: 'awb_sent' };
 }

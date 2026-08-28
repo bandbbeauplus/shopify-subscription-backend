@@ -39,11 +39,22 @@ CREATE TABLE IF NOT EXISTS shipments (
   scheduled_ship_date DATE NOT NULL,
   actual_ship_date DATE,
   spx_tracking_number VARCHAR(50),
+  spx_batch_no VARCHAR(30),
+  spx_order_id VARCHAR(32),
+  spx_booking_status VARCHAR(30) DEFAULT 'not_created', -- not_created, creating, submitted, processing, created, awb_processing, ready, failed
+  spx_last_synced_at TIMESTAMP,
+  spx_error TEXT,
   shipment_status VARCHAR(20) DEFAULT 'pending', -- pending, ready_to_ship, shipped, delivered, failed, cancelled
   spx_entry_created BOOLEAN DEFAULT FALSE,
   spx_entry_date TIMESTAMP,
   spx_awb_url TEXT,
   spx_awb_sent_at TIMESTAMP,
+  google_drive_file_id VARCHAR(100),
+  google_awb_url TEXT,
+  google_sheet_row_number INT,
+  google_awb_sync_status VARCHAR(30) DEFAULT 'not_synced', -- not_synced, syncing, synced, failed
+  google_awb_synced_at TIMESTAMP,
+  google_awb_error TEXT,
   oms_order_id VARCHAR(100),
   oms_order_reference VARCHAR(100),
   shopify_delivery_order_id VARCHAR(50),
@@ -63,8 +74,19 @@ CREATE TABLE IF NOT EXISTS shipments (
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS product_sku VARCHAR(100);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS product_variant_id VARCHAR(50);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS product_quantity INT DEFAULT 1;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_batch_no VARCHAR(30);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_order_id VARCHAR(32);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_booking_status VARCHAR(30) DEFAULT 'not_created';
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_last_synced_at TIMESTAMP;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_error TEXT;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_awb_url TEXT;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_awb_sent_at TIMESTAMP;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS google_drive_file_id VARCHAR(100);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS google_awb_url TEXT;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS google_sheet_row_number INT;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS google_awb_sync_status VARCHAR(30) DEFAULT 'not_synced';
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS google_awb_synced_at TIMESTAMP;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS google_awb_error TEXT;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS oms_order_id VARCHAR(100);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS oms_order_reference VARCHAR(100);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS shopify_delivery_order_id VARCHAR(50);
@@ -80,4 +102,5 @@ ALTER TABLE shipments ADD COLUMN IF NOT EXISTS warehouse_error TEXT;
 CREATE INDEX IF NOT EXISTS idx_shipments_scheduled_date ON shipments(scheduled_ship_date);
 CREATE INDEX IF NOT EXISTS idx_shipments_status ON shipments(shipment_status);
 CREATE INDEX IF NOT EXISTS idx_shipments_warehouse_status ON shipments(warehouse_status);
+CREATE INDEX IF NOT EXISTS idx_shipments_spx_batch_no ON shipments(spx_batch_no);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_order_id ON subscriptions(order_id);
