@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS shipments (
   spx_tracking_updated_at TIMESTAMP,
   spx_actual_shipping_fee DECIMAL(10,2),
   spx_latest_actual_weight DECIMAL(10,3),
+  spx_epod_urls JSONB DEFAULT '[]'::jsonb,
+  spx_epop_urls JSONB DEFAULT '[]'::jsonb,
+  spx_epor_urls JSONB DEFAULT '[]'::jsonb,
+  spx_epooh_urls JSONB DEFAULT '[]'::jsonb,
+  spx_evidence_status VARCHAR(100),
+  spx_evidence_status_code_name VARCHAR(100),
+  spx_evidence_updated_at TIMESTAMP,
   spx_awb_sent_at TIMESTAMP,
   google_drive_file_id VARCHAR(100),
   google_awb_url TEXT,
@@ -104,6 +111,13 @@ ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_tracking_link TEXT;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_tracking_updated_at TIMESTAMP;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_actual_shipping_fee DECIMAL(10,2);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_latest_actual_weight DECIMAL(10,3);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_epod_urls JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_epop_urls JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_epor_urls JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_epooh_urls JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_evidence_status VARCHAR(100);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_evidence_status_code_name VARCHAR(100);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_evidence_updated_at TIMESTAMP;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_booking_status VARCHAR(30) DEFAULT 'not_created';
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_last_synced_at TIMESTAMP;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_error TEXT;
@@ -148,3 +162,16 @@ CREATE TABLE IF NOT EXISTS spx_tracking_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_spx_tracking_events_shipment ON spx_tracking_events(shipment_id);
+
+CREATE TABLE IF NOT EXISTS spx_evidence_events (
+  event_id VARCHAR(100) PRIMARY KEY,
+  shipment_id INT REFERENCES shipments(id) ON DELETE SET NULL,
+  tracking_no VARCHAR(50),
+  customer_order_id VARCHAR(50),
+  tracking_code_name VARCHAR(100),
+  status VARCHAR(100),
+  status_code_name VARCHAR(100),
+  received_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_spx_evidence_events_shipment ON spx_evidence_events(shipment_id);

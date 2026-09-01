@@ -32,6 +32,9 @@ reconciliation. Read `README.md` before changing the workflow.
 - SPX tracking callbacks belong at `/spx/webhooks/tracking`, outside Shopify's
   HMAC middleware. Preserve exact raw-body signature verification, timestamp
   freshness, event-ID idempotency, and non-regressing delivery status updates.
+- SPX permanent evidence URLs belong at `/spx/webhooks/evidence`. Store only
+  validated HTTPS URLs and event metadata, keep them behind dashboard
+  authentication, and never log proof links or customer evidence.
 - In SPX UAT, use only the approved fixed address profile and never send real
   customer data. In production, require SPX-confirmed hierarchy values for the
   supplied warehouse sender and a valid pickup timeslot before enabling pickup.

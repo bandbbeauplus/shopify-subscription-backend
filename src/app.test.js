@@ -16,3 +16,16 @@ test('exposes the SPX webhook separately and rejects unsigned callbacks', async 
   assert.equal(response.status, 401);
   assert.equal(await response.text(), 'Unauthorized');
 });
+
+test('protects the SPX evidence callback with the same signature middleware', async (context) => {
+  const server = http.createServer(createApp());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  const response = await fetch(`http://127.0.0.1:${address.port}/spx/webhooks/evidence`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: 'unsigned-evidence' }),
+  });
+  assert.equal(response.status, 401);
+});

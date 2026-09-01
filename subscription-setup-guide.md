@@ -81,6 +81,8 @@ the AWB to the warehouse.
   1.6 AWB retrieval.
 - Signed SPX tracking webhook with replay protection and automatic shipment
   status updates.
+- Signed SPX evidence webhook that stores permanent pickup, delivery, return,
+  and handling-proof URLs without duplicating the files in Drive.
 - SPX UAT address isolation so real customer addresses are never sent to UAT.
 - SPX mass-order Excel generation only after warehouse status is `packed`.
 - Manual SPX tracking and optional HTTPS AWB PDF recording.
@@ -195,6 +197,16 @@ https://shopify-subscription-backend.onrender.com/spx/webhooks/tracking
 Configure the live app ID/secret before their callback test. The backend must
 be on an always-on Render instance because SPX requires an HTTP 200 response
 within three seconds and can stop callbacks after repeated timeouts.
+
+Provide SPX the separate evidence callback URL:
+
+```text
+https://shopify-subscription-backend.onrender.com/spx/webhooks/evidence
+```
+
+SPX confirmed that evidence URLs do not expire. The app stores only those URLs
+and event metadata in PostgreSQL and displays them in authenticated Shopify
+admin, so no additional file-storage service is required.
 
 ## Google AWB monitoring status
 

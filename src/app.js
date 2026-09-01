@@ -7,6 +7,7 @@ const errorHandler = require('./middleware/errorHandler');
 const notFound = require('./middleware/notFound');
 const shopifyOrdersWebhook = require('./webhooks/shopifyOrders');
 const { router: spxTrackingWebhook } = require('./webhooks/spxTracking');
+const { router: spxEvidenceWebhook } = require('./webhooks/spxEvidence');
 const shipmentsRoutes = require('./routes/shipments');
 const subscriptionsRoutes = require('./routes/subscriptions');
 const verifyDashboardApiKey = require('./middleware/verifyDashboardApiKey');
@@ -32,7 +33,8 @@ function createApp() {
     '/spx/webhooks',
     express.raw({ type: 'application/json', limit: '256kb' }),
     verifySpxWebhook,
-    spxTrackingWebhook
+    spxTrackingWebhook,
+    spxEvidenceWebhook
   );
 
   // Shopify HMAC verification must receive the exact raw request body.

@@ -23,6 +23,11 @@ The signed SPX tracking callback is implemented at
 and updates matching shipments without allowing delayed events to downgrade a
 shipped or delivered parcel.
 
+The signed evidence callback at `POST /spx/webhooks/evidence` stores SPX's
+permanent pickup, delivery, return, and other-handling proof URLs. Files are not
+copied to Drive, so this adds only small PostgreSQL metadata records. Proof
+links remain visible only through the authenticated Shopify admin dashboard.
+
 SellerCraft successfully synchronized a paid Shopify test order to Anchanto,
 and a Shopify cancellation synchronized back to the warehouse order. The
 expected out-of-stock problem state confirmed that SKU and inventory mapping
@@ -132,6 +137,7 @@ the Shopify webhook at your live URL instead of ngrok.
 | POST | `/webhooks/orders/create` | Shopify calls this automatically |
 | POST | `/webhooks/orders/cancelled` | Cancel matching pending fulfillment records |
 | POST | `/spx/webhooks/tracking` | Receive signed SPX tracking-status callbacks |
+| POST | `/spx/webhooks/evidence` | Receive signed permanent SPX evidence-proof URLs |
 | GET | `/api/shipments/due-today` | Main dashboard view |
 | GET | `/api/shipments/spx-xlsx` | Download SPX's populated Excel template for shipments due today |
 | GET | `/api/shipments/:id/spx-xlsx` | Download SPX's populated Excel template for one shipment |
@@ -185,6 +191,17 @@ SPX requires an HTTP 200 response within three seconds. Use an always-on
 production backend instance; a sleeping/free service can cold-start too slowly
 and SPX may stop pushing after repeated timeouts. Events are matched by tracking
 number or the deterministic partner order ID (`BB-{shipment_id}`).
+
+Register the separate evidence callback as:
+
+```text
+https://shopify-subscription-backend.onrender.com/spx/webhooks/evidence
+```
+
+It accepts SPX `epop_list`, `epod_list`, `epor_list`, and `epooh_list` updates,
+validates HTTPS links, deduplicates by callback ID, and stores the permanent
+URLs on the matching shipment. Evidence URLs can expose pickup photos or
+customer signatures; do not place them in public logs or documents.
 
 ## OMS/WMS integration modes
 
