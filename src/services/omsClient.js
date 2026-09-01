@@ -9,9 +9,20 @@ function externalReference(shipment) {
 
 function buildOrderPayload(shipment) {
   const address = shipment.shipping_address || {};
+  const items = Array.isArray(shipment.line_items) && shipment.line_items.length
+    ? shipment.line_items.map((item) => ({
+      name: item.name || item.title || shipment.product_name,
+      sku: item.sku || null,
+      quantity: Math.max(1, Number(item.quantity || 1)),
+    }))
+    : [{
+      name: shipment.product_name,
+      sku: shipment.product_sku || null,
+      quantity: Number(shipment.product_quantity || 1),
+    }];
   return {
     external_reference: externalReference(shipment),
-    source: 'shopify_subscription_app',
+    source: 'shopify_fulfillment_app',
     shopify_order_id: String(shipment.order_id),
     scheduled_ship_date: shipment.scheduled_ship_date,
     recipient: {
@@ -25,12 +36,9 @@ function buildOrderPayload(shipment) {
       postal_code: address.zip || '',
       country: address.country || 'PH',
     },
-    items: [{
-      name: shipment.product_name,
-      sku: shipment.product_sku || null,
-      quantity: Number(shipment.product_quantity || 1),
-    }],
+    items,
     metadata: {
+      shipment_kind: shipment.shipment_kind || 'subscription',
       subscription_id: shipment.subscription_id,
       shipment_id: shipment.id,
       shipment_number: shipment.shipment_number,

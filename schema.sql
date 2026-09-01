@@ -24,16 +24,23 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE TABLE IF NOT EXISTS shipments (
   id SERIAL PRIMARY KEY,
   subscription_id INT REFERENCES subscriptions(id) ON DELETE CASCADE,
+  shipment_kind VARCHAR(20) DEFAULT 'subscription', -- subscription or ordinary
   order_id VARCHAR(50),
+  order_name VARCHAR(50),
   customer_id VARCHAR(50),
   customer_name VARCHAR(150),
   customer_email VARCHAR(150),
   customer_phone VARCHAR(20),
   shipping_address JSONB,
   product_name VARCHAR(200),
+  variant_title VARCHAR(150),
   product_sku VARCHAR(100),
   product_variant_id VARCHAR(50),
   product_quantity INT DEFAULT 1,
+  line_items JSONB DEFAULT '[]'::jsonb,
+  order_total_price DECIMAL(10,2),
+  physical_box_count INT DEFAULT 1,
+  parcel_weight_kg DECIMAL(10,3),
   shipment_number INT,                     -- 1 of 6, 2 of 6, etc.
   total_shipments INT,                     -- so dashboard can show "2 of 6"
   scheduled_ship_date DATE NOT NULL,
@@ -48,6 +55,13 @@ CREATE TABLE IF NOT EXISTS shipments (
   spx_entry_created BOOLEAN DEFAULT FALSE,
   spx_entry_date TIMESTAMP,
   spx_awb_url TEXT,
+  spx_tracking_status VARCHAR(100),
+  spx_tracking_status_code VARCHAR(30),
+  spx_tracking_message VARCHAR(500),
+  spx_tracking_link TEXT,
+  spx_tracking_updated_at TIMESTAMP,
+  spx_actual_shipping_fee DECIMAL(10,2),
+  spx_latest_actual_weight DECIMAL(10,3),
   spx_awb_sent_at TIMESTAMP,
   google_drive_file_id VARCHAR(100),
   google_awb_url TEXT,
@@ -71,11 +85,25 @@ CREATE TABLE IF NOT EXISTS shipments (
 );
 
 -- Safe upgrades for databases created before the OMS/WMS workflow was added.
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS shipment_kind VARCHAR(20) DEFAULT 'subscription';
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS order_name VARCHAR(50);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS variant_title VARCHAR(150);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS product_sku VARCHAR(100);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS product_variant_id VARCHAR(50);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS product_quantity INT DEFAULT 1;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS line_items JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS order_total_price DECIMAL(10,2);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS physical_box_count INT DEFAULT 1;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS parcel_weight_kg DECIMAL(10,3);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_batch_no VARCHAR(30);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_order_id VARCHAR(32);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_tracking_status VARCHAR(100);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_tracking_status_code VARCHAR(30);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_tracking_message VARCHAR(500);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_tracking_link TEXT;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_tracking_updated_at TIMESTAMP;
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_actual_shipping_fee DECIMAL(10,2);
+ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_latest_actual_weight DECIMAL(10,3);
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_booking_status VARCHAR(30) DEFAULT 'not_created';
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_last_synced_at TIMESTAMP;
 ALTER TABLE shipments ADD COLUMN IF NOT EXISTS spx_error TEXT;
@@ -103,4 +131,20 @@ CREATE INDEX IF NOT EXISTS idx_shipments_scheduled_date ON shipments(scheduled_s
 CREATE INDEX IF NOT EXISTS idx_shipments_status ON shipments(shipment_status);
 CREATE INDEX IF NOT EXISTS idx_shipments_warehouse_status ON shipments(warehouse_status);
 CREATE INDEX IF NOT EXISTS idx_shipments_spx_batch_no ON shipments(spx_batch_no);
+CREATE INDEX IF NOT EXISTS idx_shipments_kind ON shipments(shipment_kind);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shipments_ordinary_order_unique
+  ON shipments(order_id) WHERE shipment_kind = 'ordinary';
 CREATE INDEX IF NOT EXISTS idx_subscriptions_order_id ON subscriptions(order_id);
+
+CREATE TABLE IF NOT EXISTS spx_tracking_events (
+  event_id VARCHAR(100) PRIMARY KEY,
+  shipment_id INT REFERENCES shipments(id) ON DELETE SET NULL,
+  tracking_no VARCHAR(50),
+  order_id VARCHAR(50),
+  status_code VARCHAR(30),
+  status VARCHAR(100),
+  event_timestamp TIMESTAMP NOT NULL,
+  received_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_spx_tracking_events_shipment ON spx_tracking_events(shipment_id);

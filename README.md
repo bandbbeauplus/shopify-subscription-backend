@@ -1,7 +1,7 @@
 # Subscription Backend (b&b BEAU+)
 
-Tracks prepaid Shopify subscription orders (1/3/6/12-month plans), generates a
-calendar-month shipment schedule per order, and provides APIs for the Shopify
+Tracks ordinary Shopify orders and prepaid subscriptions (1/3/6/12-month
+plans), generates a calendar-month shipment schedule for prepaid plans, and provides APIs for the Shopify
 admin dashboard, SellerCraft/Anchanto preparation, and SPX handoff.
 
 ## Current status
@@ -11,13 +11,29 @@ duplicate-order protection, transactional schedule creation, dashboard
 authentication, managed SellerCraft/Anchanto handoff, and signed SPX OpenAPI
 UAT booking are implemented.
 
-SPX account creation and verification now succeed on
-`https://test-stable.spx.ph`. The backend implements API 1.4 batch order
-creation, API 1.5 result polling, and API 1.6 AWB retrieval. UAT requests replace
-real customer addresses with SPX's approved test profile. Excel export and
-manual tracking confirmation remain available as fallbacks. Production SPX
-activation still requires live credentials, Ninja Van's warehouse sender
-details, and an SPX pickup-timeslot workflow. SMS delivery must also be verified.
+SPX account creation, account verification, API 1.4 order creation, API 1.5
+tracking retrieval, and API 1.6 AWB generation have all completed successfully
+against `https://test-stable.spx.ph`. UAT requests replace real customer
+addresses with SPX's approved test profile. Excel export and manual tracking
+confirmation remain available as fallbacks.
+
+The signed SPX tracking callback is implemented at
+`POST /spx/webhooks/tracking`. It verifies the raw body using SPX's
+`check-sign`, rejects stale/replayed requests, stores event IDs for idempotency,
+and updates matching shipments without allowing delayed events to downgrade a
+shipped or delivered parcel.
+
+SellerCraft successfully synchronized a paid Shopify test order to Anchanto,
+and a Shopify cancellation synchronized back to the warehouse order. The
+expected out-of-stock problem state confirmed that SKU and inventory mapping
+remain warehouse prerequisites.
+
+Google Drive archival and Google Sheet upsert code is implemented but has not
+been live-tested because the backend does not yet have the client's Google
+service-account, folder, and spreadsheet configuration. Production SPX
+activation still requires live credentials, confirmation of the SPX address
+hierarchy for Ninja Van's Cabuyao warehouse, and an SPX pickup-timeslot
+workflow. Customer SMS is disabled because Shopify owns customer notifications.
 
 The API currently assumes a single Shopify store. Records are not scoped by shop, and the dashboard uses one shared API key.
 
@@ -28,11 +44,12 @@ Shopify order created
       ↓
 Webhook → POST /webhooks/orders/create   (verified via HMAC)
       ↓
-Only variant titles beginning with 1/3/6/12-Month Plan are accepted
-Ordinary sachet variants and bb_subscription_delivery orders are ignored
+Recurring variant titles beginning with 1/3/6/12-Month Plan create a plan
+Ordinary sachet variants create a one-time fulfillment shipment
+bb_subscription_delivery child orders are ignored
       ↓
-Inserts 1 row into `subscriptions`
-Inserts N rows into `shipments` (one per calendar month; checkout is shipment 1)
+Recurring: inserts 1 subscription and N monthly shipment rows
+Ordinary: inserts 1 one-time shipment row
       ↓
 Your dashboard calls GET /api/shipments/due-today
       ↓
@@ -47,10 +64,11 @@ POST /api/shipments/:id/create-spx returns an SPX batch number
       ↓
 POST /api/shipments/:id/sync-spx retrieves tracking and the AWB PDF
       ↓
-Operator shares the SPX AWB with Ninja Van for printing and attachment
 The backend archives the PDF in Drive and upserts the Google monitoring sheet
       ↓
-Row updated: tracking saved, status = ready_to_ship, customer SMS sent
+Operator notifies Ninja Van and later confirms the AWB was shared
+      ↓
+Row updated: tracking saved, status = ready_to_ship; Shopify handles customer notices
 ```
 
 ## Setup
@@ -96,6 +114,9 @@ Shopify Admin → **Settings → Notifications** → scroll to the bottom →
 - URL: `https://your-domain.com/webhooks/orders/create`
   (or your ngrok URL while testing)
 
+Create a second JSON webhook for `Order cancellation` at:
+`https://your-domain.com/webhooks/orders/cancelled`.
+
 Shopify will show you a **signing secret** when you save — copy that into
 `SHOPIFY_WEBHOOK_SECRET` in your `.env`.
 
@@ -109,10 +130,12 @@ the Shopify webhook at your live URL instead of ngrok.
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/webhooks/orders/create` | Shopify calls this automatically |
+| POST | `/webhooks/orders/cancelled` | Cancel matching pending fulfillment records |
+| POST | `/spx/webhooks/tracking` | Receive signed SPX tracking-status callbacks |
 | GET | `/api/shipments/due-today` | Main dashboard view |
 | GET | `/api/shipments/spx-xlsx` | Download SPX's populated Excel template for shipments due today |
 | GET | `/api/shipments/:id/spx-xlsx` | Download SPX's populated Excel template for one shipment |
-| GET | `/api/shipments?status=&from=&to=` | Filtered shipment list |
+| GET | `/api/shipments?status=&kind=&from=&to=` | Filtered shipment list (`kind=ordinary` or `subscription`) |
 | GET | `/api/shipments/subscriptions/:id` | All shipments for one subscription |
 | GET | `/api/shipments/integration-config` | Show safe OMS and SPX configuration state |
 | GET | `/api/shipments/:id` | Load one shipment for a Shopify delivery release |
@@ -144,6 +167,25 @@ provide its warehouse sender name, phone, complete address, and postal code.
 Pickup (`SPX_COLLECT_TYPE=1`) also requires a current API 1.1 timeslot. Until
 those are confirmed, keep production disabled and use UAT or Excel fallback.
 
+### SPX tracking webhook
+
+Register this public production callback with SPX:
+
+```text
+https://shopify-subscription-backend.onrender.com/spx/webhooks/tracking
+```
+
+SPX signs the exact JSON bytes using the app ID, request `timestamp`,
+`random-num`, and app secret. The callback uses `SPX_WEBHOOK_APP_ID` and
+`SPX_WEBHOOK_APP_SECRET` when supplied, otherwise it falls back to
+`SPX_APP_ID` and `SPX_APP_SECRET`. Set the new live credentials on the backend
+before SPX sends a production test callback.
+
+SPX requires an HTTP 200 response within three seconds. Use an always-on
+production backend instance; a sleeping/free service can cold-start too slowly
+and SPX may stop pushing after repeated timeouts. Events are matched by tracking
+number or the deterministic partner order ID (`BB-{shipment_id}`).
+
 ## OMS/WMS integration modes
 
 SellerCraft already provides the managed Shopify-to-OMS connection used by
@@ -167,6 +209,9 @@ Shopify delivery-order fields without deleting existing shipment data.
 
 ## Google Drive and Sheets AWB monitoring
 
+See [`GOOGLE_AWB_SETUP.md`](GOOGLE_AWB_SETUP.md) for the exact Google Cloud,
+Drive, Sheet, sharing, ID, and base64-key steps.
+
 Set `GOOGLE_AWB_MODE=api` to archive each completed SPX AWB in Google Drive
 and add or update its monitoring row in Google Sheets. The automatic sync runs
 after API 1.6 returns the AWB. Google failures are stored separately and can be
@@ -175,8 +220,9 @@ retried from the dashboard without creating another SPX order.
 1. In the client's Google Cloud project, enable the Google Drive API and Google
    Sheets API.
 2. Create a service account and download its JSON key.
-3. Create an `AWB Monitoring` tab with columns A-H available, plus a private
-   Google Shared Drive folder for the PDFs.
+3. Create an `AWB Monitoring` tab with columns A-K available, plus a private
+   Google Shared Drive folder for the PDFs. The backend creates the header row
+   when the tab is empty.
 4. Add the service-account email to the Shared Drive/folder and share the
    spreadsheet with it. Share the final folder and sheet with Ninja Van using
    their approved accounts.
@@ -186,12 +232,17 @@ retried from the dashboard without creating another SPX order.
 6. Configure `GOOGLE_DRIVE_FOLDER_ID`, `GOOGLE_SHEET_ID`, and optionally
    `GOOGLE_SHEET_TAB`, then set `GOOGLE_AWB_MODE=api`.
 
-The sheet stores shipment/order references, SKU, tracking number, Drive URL,
-generation time, print status, and environment. It intentionally excludes
+The sheet stores order type, shipment/order references, SKU, physical box
+count, parcel weight, tracking number, Drive URL, generation time, print
+status, and environment. It intentionally excludes
 customer names, phone numbers, and addresses. The SPX signed download URL is
 temporary, so the warehouse-facing link always points to the archived Drive
 copy. Shipment ID is the upsert key, preventing repeated polling from adding a
 second monitoring row.
+
+This integration is implemented but remains disabled until the Google
+service-account and destination IDs are configured and one live UAT upload is
+verified.
 
 ## Known limitations before production
 
@@ -202,7 +253,14 @@ second monitoring row.
 - The webhook currently creates one subscription from the first matching plan
   line. Mixed carts containing multiple prepaid plan lines require additional
   modeling before production use.
+- Ordinary products now create one-time shipment rows and use the same packed →
+  SPX → AWB → Google workflow without creating subscription records. A mixed
+  cart's first shipment contains all checkout items; later shipments contain
+  only the recurring plan item.
 - The webhook currently does not enforce a paid financial status before creating a subscription.
+- Shopify cancellation is consumed when the `Order cancellation` webhook is
+  registered. It cancels pending internal shipments but cannot reverse parcels
+  already shipped or delivered.
 - The dashboard list endpoints return all matching rows and do not provide pagination.
 - SPX retries use a deterministic partner order ID and an atomic local claim,
   but recovery from a network timeout after SPX accepts an order still needs a
@@ -214,18 +272,26 @@ second monitoring row.
   response normalization; route, webhook, and status-transition coverage is
   still needed.
 - For a multi-store Shopify app, add a shop identifier to subscriptions, shipments, webhook processing, and dashboard authorization before onboarding additional stores.
-- SPX workbook exports default to 0.2 kg and 20 × 15 × 10 cm. Set the `SPX_PARCEL_*` environment variables to the actual packed dimensions before live use.
+- Parcel weight is calculated at 188 g per physical box: 7/14/28-sachet
+  ordinary variants map to 1/2/4 boxes and each monthly prepaid delivery maps
+  to 4 boxes (0.752 kg). The 20 × 15 × 10 cm dimensions are temporary; replace
+  them with measured packed-parcel dimensions before live use.
 - SPX API orders are sender-pay and non-COD because Shopify has already collected
   payment. Confirm the production parcel category and insured value policy.
 
 ## Next steps
 
-- Complete the managed SellerCraft/Anchanto test using one confirmed, mapped SKU.
-- Run one SPX UAT order through batch creation, result polling, and AWB retrieval
-  using SPX's approved test address.
-- Obtain Ninja Van's warehouse sender details and confirm how operators will
-  receive packed status and deliver the AWB PDF.
+- Obtain the production SPX base URL, App ID/secret, account activation, and
+  production user credentials from SPX.
+- Confirm SPX's exact state/city/district/street hierarchy for the supplied
+  Ninja Van Cabuyao warehouse and the final pickup/drop-off process.
+- Create the client's Google service account, Shared Drive folder, and
+  monitoring Sheet; configure the backend and run one end-to-end UAT upload.
+- Confirm the pre-order/stock-hold procedure with Ninja Van before enabling
+  pre-orders while inventory is unavailable.
 - Add SPX API 1.1 pickup-timeslot selection before enabling live pickup.
+- Move the Render backend to an always-on production instance before enabling
+  SPX tracking callbacks.
 - Add a cron job to catch shipments whose date passed without action, and
   alert your team (Slack webhook, email, etc.)
 - Keep the dashboard API key private and rotate it if exposed.

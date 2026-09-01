@@ -1,5 +1,6 @@
 const ExcelJS = require('exceljs');
 const httpError = require('./httpError');
+const { shipmentParcelProfile } = require('./parcelProfile');
 
 const HEADERS = [
   '*Recipient Name', '*Recipient Phone', '*Detail Address', 'Region', 'Province',
@@ -46,27 +47,32 @@ function valuesForShipment(shipment) {
   const town = String(address.city || address.town || '').trim();
   const barangay = String(address.barangay || address.barangay_name || '').trim();
   const detailAddress = [region, province, town, barangay, address.address1, address.address2].filter(Boolean).join(', ');
-  const planMonths = Number(shipment.plan_months);
-  const totalPaid = Number(shipment.total_price_paid);
-  if (!Number.isFinite(planMonths) || planMonths <= 0 || !Number.isFinite(totalPaid) || totalPaid <= 0) {
+  const totalShipments = Number(shipment.plan_months || shipment.total_shipments || 1);
+  const totalPaid = Number(shipment.total_price_paid || shipment.order_total_price);
+  if (!Number.isFinite(totalShipments) || totalShipments <= 0 || !Number.isFinite(totalPaid) || totalPaid <= 0) {
     throw httpError(422, `Shipment ${shipment.id} is missing a valid parcel value`);
   }
+  const parcel = shipmentParcelProfile(shipment, Number(process.env.SPX_UNIT_BOX_WEIGHT_G || 188));
+  const configuredWeight = process.env.SPX_PARCEL_WEIGHT_KG;
+  const weight = configuredWeight === undefined || configuredWeight === ''
+    ? parcel.parcelWeightKg
+    : numericSetting('SPX_PARCEL_WEIGHT_KG', parcel.parcelWeightKg);
 
   return [
     requiredText(shipment.customer_name, 'recipient name', shipment.id, 250),
     normalizePhone(shipment.customer_phone, shipment.id),
     requiredText(detailAddress, 'detail address', shipment.id, 250),
     region, province, town, barangay, String(address.zip || '0000').trim(),
-    numericSetting('SPX_PARCEL_WEIGHT_KG', 0.2),
+    weight,
     numericSetting('SPX_PARCEL_LENGTH_CM', 20),
     numericSetting('SPX_PARCEL_WIDTH_CM', 15),
     numericSetting('SPX_PARCEL_HEIGHT_CM', 10),
     choiceSetting('SPX_ITEM_TYPE', 'General merchandise', ITEM_TYPES),
     requiredText(shipment.product_name, 'item name', shipment.id, 250),
-    1, `BB-${shipment.order_id}-${shipment.shipment_number}`.slice(0, 32),
+    parcel.physicalBoxCount, `BB-${shipment.order_id}-${shipment.shipment_number}`.slice(0, 32),
     choiceSetting('SPX_PAYMENT_METHOD', 'Sender Pay', PAYMENT_METHODS),
     String(process.env.SPX_DELIVERY_INSTRUCTION || '').slice(0, 256),
-    'N', 0, Math.min(50000, Math.round((totalPaid / planMonths) * 100) / 100),
+    'N', 0, Math.min(50000, Math.round((totalPaid / totalShipments) * 100) / 100),
   ];
 }
 

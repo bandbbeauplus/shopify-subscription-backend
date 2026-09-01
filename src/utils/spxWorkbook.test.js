@@ -7,6 +7,7 @@ const shipment = {
   id: 42, order_id: '1234567890', shipment_number: 1, customer_name: 'Test Customer', customer_phone: '+63 912 345 6789',
   shipping_address: { address1: '123 Test Street', address2: 'Barangay Test', city: 'Quezon City', province: 'Metro Manila', zip: '1100' },
   product_name: 'B&B BEAU+', total_price_paid: '3600.00', plan_months: 6,
+  physical_box_count: 4, parcel_weight_kg: 0.752,
 };
 
 test('creates one-sheet SPX workbook with the requested headers', async () => {
@@ -15,7 +16,8 @@ test('creates one-sheet SPX workbook with the requested headers', async () => {
   assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ['Order Sheet']);
   assert.deepEqual(workbook.getWorksheet('Order Sheet').getRow(1).values.slice(1), HEADERS);
   assert.equal(workbook.getWorksheet('Order Sheet').getCell('B2').value, '9123456789');
-  assert.equal(workbook.getWorksheet('Order Sheet').getCell('I2').value, 0.2);
+  assert.equal(workbook.getWorksheet('Order Sheet').getCell('I2').value, 0.752);
+  assert.equal(workbook.getWorksheet('Order Sheet').getCell('O2').value, 4);
   assert.equal(workbook.getWorksheet('Order Sheet').getCell('Q2').value, 'Sender Pay');
   assert.equal(workbook.getWorksheet('Order Sheet').getCell('S2').value, 'N');
   assert.equal(workbook.getWorksheet('Order Sheet').getCell('U2').value, 600);

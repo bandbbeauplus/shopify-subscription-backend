@@ -16,12 +16,27 @@ const shipment = {
   product_name: 'B&B Product',
   product_sku: 'BB-6M',
   product_quantity: 1,
+  shipment_kind: 'subscription',
 };
 
 test('builds a deterministic unique OMS reference for a scheduled shipment', () => {
   assert.equal(externalReference(shipment), 'BB-12345-2');
   assert.equal(buildOrderPayload(shipment).external_reference, 'BB-12345-2');
   assert.equal(buildOrderPayload(shipment).items[0].sku, 'BB-6M');
+});
+
+test('preserves every Shopify line item for an ordinary warehouse order', () => {
+  const payload = buildOrderPayload({
+    ...shipment,
+    shipment_kind: 'ordinary',
+    line_items: [
+      { name: 'Reset + Focus', sku: 'BBBRF1-7P', quantity: 2 },
+      { name: 'Gut + Energy', sku: 'BBBGE1-14P', quantity: 1 },
+    ],
+  });
+  assert.equal(payload.source, 'shopify_fulfillment_app');
+  assert.equal(payload.metadata.shipment_kind, 'ordinary');
+  assert.deepEqual(payload.items.map((item) => item.sku), ['BBBRF1-7P', 'BBBGE1-14P']);
 });
 
 test('normalizes common OMS/WMS statuses', () => {

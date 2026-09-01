@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 process.env.SPX_MODE = 'api';
 process.env.SPX_ENVIRONMENT = 'uat';
 process.env.SPX_USER_SECRET = 'test-user-secret';
-process.env.SPX_SENDER_POST_CODE = '2009';
-process.env.SPX_SENDER_PHONE = '09171234567';
+process.env.SPX_UAT_SENDER_POST_CODE = '2009';
+process.env.SPX_UAT_SENDER_PHONE = '09171234567';
 process.env.SPX_UAT_RECEIVER_POST_CODE = '6818';
 process.env.SPX_UAT_RECEIVER_PHONE = '09179876543';
 
@@ -32,6 +32,8 @@ const shipment = {
   product_quantity: 1,
   total_shipments: 3,
   total_price_paid: '13197.00',
+  physical_box_count: 4,
+  parcel_weight_kg: '0.752',
 };
 
 test('matches the official SPX signing vector', () => {
@@ -72,6 +74,8 @@ test('uses only the SPX-approved UAT address profile in UAT mode', () => {
   assert.equal(order.fulfillment_info.collect_type, 2);
   assert.equal(order.fulfillment_info.cod_collection, 0);
   assert.equal(order.parcel_info.express_insured_value, 4399);
+  assert.equal(order.parcel_info.parcel_weight, 0.752);
+  assert.equal(order.parcel_info.parcel_item_quantity, 4);
 });
 
 test('normalizes asynchronous order creation results', () => {

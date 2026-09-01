@@ -2,9 +2,11 @@ const express = require('express');
 const cors = require('cors');
 
 const verifyShopifyWebhook = require('./middleware/verifyShopifyWebhook');
+const { verifySpxWebhook } = require('./middleware/verifySpxWebhook');
 const errorHandler = require('./middleware/errorHandler');
 const notFound = require('./middleware/notFound');
 const shopifyOrdersWebhook = require('./webhooks/shopifyOrders');
+const { router: spxTrackingWebhook } = require('./webhooks/spxTracking');
 const shipmentsRoutes = require('./routes/shipments');
 const subscriptionsRoutes = require('./routes/subscriptions');
 const verifyDashboardApiKey = require('./middleware/verifyDashboardApiKey');
@@ -23,6 +25,15 @@ function createApp() {
     }
   }));
   app.disable('x-powered-by');
+
+  // SPX signs the exact raw JSON body with the SPX app secret. This endpoint
+  // must remain outside Shopify's HMAC middleware.
+  app.use(
+    '/spx/webhooks',
+    express.raw({ type: 'application/json', limit: '256kb' }),
+    verifySpxWebhook,
+    spxTrackingWebhook
+  );
 
   // Shopify HMAC verification must receive the exact raw request body.
   app.use(

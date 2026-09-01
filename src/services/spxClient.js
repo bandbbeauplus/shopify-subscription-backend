@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const axios = require('axios');
 const httpError = require('../utils/httpError');
+const { shipmentParcelProfile } = require('../utils/parcelProfile');
 
 const SPX_MODE = process.env.SPX_MODE || 'disabled';
 const SPX_ENVIRONMENT = process.env.SPX_ENVIRONMENT || 'uat';
@@ -104,13 +105,18 @@ function isSpxConfigured() {
     'SPX_APP_SECRET',
     'SPX_USER_ID',
     'SPX_USER_SECRET',
-    'SPX_SENDER_PHONE',
-    'SPX_SENDER_POST_CODE',
   ];
   if (SPX_ENVIRONMENT === 'uat') {
-    names.push('SPX_UAT_RECEIVER_PHONE', 'SPX_UAT_RECEIVER_POST_CODE');
+    names.push(
+      'SPX_UAT_SENDER_PHONE',
+      'SPX_UAT_SENDER_POST_CODE',
+      'SPX_UAT_RECEIVER_PHONE',
+      'SPX_UAT_RECEIVER_POST_CODE'
+    );
   } else {
     names.push(
+      'SPX_SENDER_PHONE',
+      'SPX_SENDER_POST_CODE',
       'SPX_SENDER_STATE',
       'SPX_SENDER_CITY',
       'SPX_SENDER_DISTRICT',
@@ -126,16 +132,32 @@ function isSpxConfigured() {
 
 function senderInfo() {
   const profile = SPX_ENVIRONMENT === 'uat' ? UAT_ADDRESS_PROFILE.sender : null;
+  const isUat = Boolean(profile);
   return {
     sender_state: compactText(profile?.state || requiredEnv('SPX_SENDER_STATE'), 64, 'sender state'),
     sender_city: compactText(profile?.city || requiredEnv('SPX_SENDER_CITY'), 64, 'sender city'),
     sender_district: compactText(profile?.district || requiredEnv('SPX_SENDER_DISTRICT'), 64, 'sender district'),
     sender_street: compactText(profile?.street || requiredEnv('SPX_SENDER_STREET'), 64, 'sender street'),
-    sender_post_code: compactText(requiredEnv('SPX_SENDER_POST_CODE'), 16, 'sender postal code'),
-    sender_name: compactText(optionalEnv('SPX_SENDER_NAME', 'B&B BEAU+'), 64, 'sender name'),
-    sender_phone: normalizePhone(requiredEnv('SPX_SENDER_PHONE'), 'SPX sender phone'),
+    sender_post_code: compactText(
+      requiredEnv(isUat ? 'SPX_UAT_SENDER_POST_CODE' : 'SPX_SENDER_POST_CODE'),
+      16,
+      'sender postal code'
+    ),
+    sender_name: compactText(
+      isUat
+        ? optionalEnv('SPX_UAT_SENDER_NAME', 'B&B BEAU+ UAT')
+        : optionalEnv('SPX_SENDER_NAME', 'Ninjavan Fulfillment Warehouse'),
+      64,
+      'sender name'
+    ),
+    sender_phone: normalizePhone(
+      requiredEnv(isUat ? 'SPX_UAT_SENDER_PHONE' : 'SPX_SENDER_PHONE'),
+      'SPX sender phone'
+    ),
     sender_detail_address: compactText(
-      optionalEnv('SPX_SENDER_DETAIL_ADDRESS', profile?.street || ''),
+      isUat
+        ? optionalEnv('SPX_UAT_SENDER_DETAIL_ADDRESS', profile.street)
+        : requiredEnv('SPX_SENDER_DETAIL_ADDRESS'),
       256,
       'sender detailed address'
     ),
@@ -187,14 +209,23 @@ function parcelInfo(shipment) {
   if (!Number.isFinite(insuredValue) || insuredValue < 0 || insuredValue > 50000) {
     throw httpError(422, 'SPX parcel insured value must be between 0 and 50,000 PHP');
   }
+  const unitBoxWeightG = positiveNumber('SPX_UNIT_BOX_WEIGHT_G', '188', {
+    min: 1,
+    max: 50000,
+  });
+  const profile = shipmentParcelProfile(shipment, unitBoxWeightG);
+  const configuredWeight = optionalEnv('SPX_PARCEL_WEIGHT_KG');
+  const parcelWeight = configuredWeight
+    ? positiveNumber('SPX_PARCEL_WEIGHT_KG', '', { min: 0.001, max: 50 })
+    : profile.parcelWeightKg;
 
   return {
-    parcel_weight: positiveNumber('SPX_PARCEL_WEIGHT_KG', '0.2', { min: 0.001, max: 50 }),
+    parcel_weight: parcelWeight,
     parcel_length: positiveNumber('SPX_PARCEL_LENGTH_CM', '20', { min: 0.001, max: 150 }),
     parcel_width: positiveNumber('SPX_PARCEL_WIDTH_CM', '15', { min: 0.001, max: 150 }),
     parcel_height: positiveNumber('SPX_PARCEL_HEIGHT_CM', '10', { min: 0.001, max: 150 }),
     parcel_item_name: compactText(shipment.product_name, 64, 'parcel item name'),
-    parcel_item_quantity: Math.max(1, Number(shipment.product_quantity || 1)),
+    parcel_item_quantity: profile.physicalBoxCount,
     express_insured_value: insuredValue,
     parcel_item_type: compactText(optionalEnv('SPX_ITEM_TYPE', 'Food and beverage'), 64, 'parcel item type'),
   };

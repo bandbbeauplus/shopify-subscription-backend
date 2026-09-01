@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
-const { sendSMS } = require('../utils/sms');
+const { isCustomerSmsEnabled, sendSMS } = require('../utils/sms');
 const { buildSpxWorkbook } = require('../utils/spxWorkbook');
 const asyncHandler = require('../middleware/asyncHandler');
 const httpError = require('../utils/httpError');
@@ -27,6 +27,7 @@ const {
 } = require('../services/googleAwbClient');
 
 const SHIPMENT_STATUSES = new Set(['pending', 'ready_to_ship', 'shipped', 'delivered', 'failed', 'cancelled']);
+const SHIPMENT_KINDS = new Set(['subscription', 'ordinary']);
 
 function normalizeTrackingNumber(value) {
   const trackingNumber = String(value || '').trim();
@@ -56,10 +57,12 @@ function normalizeAwbUrl(value) {
 
 async function shipmentById(id) {
   const result = await pool.query(
-    `SELECT sh.*, s.total_price_paid, s.plan_months,
+    `SELECT sh.*,
+            COALESCE(sh.order_total_price, s.total_price_paid) AS total_price_paid,
+            COALESCE(s.plan_months, sh.total_shipments, 1) AS plan_months,
             sh.scheduled_ship_date <= CURRENT_DATE AS is_due
      FROM shipments sh
-     JOIN subscriptions s ON s.id = sh.subscription_id
+     LEFT JOIN subscriptions s ON s.id = sh.subscription_id
      WHERE sh.id = $1`,
     [id]
   );
@@ -141,8 +144,9 @@ router.get('/integration-config', (req, res) => {
 
 // GET /api/shipments?status=pending&from=2026-08-01&to=2026-08-31
 router.get('/', asyncHandler(async (req, res) => {
-    const { status, from, to, customer_email } = req.query;
+    const { status, kind, from, to, customer_email } = req.query;
     if (status && !SHIPMENT_STATUSES.has(status)) throw httpError(400, 'Invalid shipment status');
+    if (kind && !SHIPMENT_KINDS.has(kind)) throw httpError(400, 'Invalid shipment kind');
     requireValidDate(from, 'from');
     requireValidDate(to, 'to');
     const conditions = [];
@@ -151,6 +155,10 @@ router.get('/', asyncHandler(async (req, res) => {
     if (status) {
       values.push(status);
       conditions.push(`shipment_status = $${values.length}`);
+    }
+    if (kind) {
+      values.push(kind);
+      conditions.push(`shipment_kind = $${values.length}`);
     }
     if (from) {
       values.push(from);
@@ -178,9 +186,11 @@ router.get('/', asyncHandler(async (req, res) => {
 // Populates SPX's official mass-order workbook with shipments due today.
 router.get('/spx-xlsx', asyncHandler(async (req, res) => {
     const result = await pool.query(
-      `SELECT sh.*, s.total_price_paid, s.plan_months
+      `SELECT sh.*,
+              COALESCE(sh.order_total_price, s.total_price_paid) AS total_price_paid,
+              COALESCE(s.plan_months, sh.total_shipments, 1) AS plan_months
        FROM shipments sh
-       JOIN subscriptions s ON s.id = sh.subscription_id
+       LEFT JOIN subscriptions s ON s.id = sh.subscription_id
        WHERE sh.scheduled_ship_date <= CURRENT_DATE
        AND sh.shipment_status = 'pending'
        AND sh.warehouse_status = 'packed'
@@ -220,9 +230,11 @@ router.get('/subscriptions/:id', asyncHandler(async (req, res) => {
 // Populates SPX's official workbook with one pending shipment.
 router.get('/:id/spx-xlsx', asyncHandler(async (req, res) => {
     const result = await pool.query(
-      `SELECT sh.*, s.total_price_paid, s.plan_months
+      `SELECT sh.*,
+              COALESCE(sh.order_total_price, s.total_price_paid) AS total_price_paid,
+              COALESCE(s.plan_months, sh.total_shipments, 1) AS plan_months
        FROM shipments sh
-       JOIN subscriptions s ON s.id = sh.subscription_id
+       LEFT JOIN subscriptions s ON s.id = sh.subscription_id
        WHERE sh.id = $1
        AND sh.shipment_status = 'pending'
        AND sh.warehouse_status = 'packed'
@@ -472,7 +484,7 @@ router.post('/:id/confirm-spx', asyncHandler(async (req, res) => {
       [trackingNumber, awbUrl, requestedStatus, req.params.id]
     );
 
-    if (!existing.spx_tracking_number && existing.customer_phone) {
+    if (!existing.spx_tracking_number && existing.customer_phone && isCustomerSmsEnabled()) {
       await sendSMS(
         existing.customer_phone,
         `Hi! SPX tracking for b&b BEAU+ shipment ${existing.shipment_number}/${existing.total_shipments}: ${trackingNumber}. Track at https://spx.ph/track`
@@ -629,7 +641,13 @@ router.post('/:id/sync-spx', asyncHandler(async (req, res) => {
         shipment = googleResult.shipment;
       }
 
-      if (!hadTracking && shipment.spx_tracking_number && shipment.customer_phone && SPX_ENVIRONMENT !== 'uat') {
+      if (
+        !hadTracking
+        && shipment.spx_tracking_number
+        && shipment.customer_phone
+        && SPX_ENVIRONMENT !== 'uat'
+        && isCustomerSmsEnabled()
+      ) {
         await sendSMS(
           shipment.customer_phone,
           `Hi! SPX tracking for b&b BEAU+ shipment ${shipment.shipment_number}/${shipment.total_shipments}: ${shipment.spx_tracking_number}. Track at https://spx.ph/track`

@@ -13,6 +13,9 @@ const shipment = {
   order_id: '567890123',
   shopify_delivery_order_name: '#1005',
   product_sku: 'TEST-BBBGE-SP1M',
+  shipment_kind: 'ordinary',
+  physical_box_count: 4,
+  parcel_weight_kg: 0.752,
   spx_tracking_number: 'SPEPH061801306218',
 };
 
@@ -38,10 +41,13 @@ test('builds a monitoring row without customer personal information', () => {
     'https://drive.google.com/file/d/test/view',
     new Date('2026-08-28T01:02:03.000Z')
   );
-  assert.deepEqual(row.slice(0, 7), [
+  assert.deepEqual(row.slice(0, 10), [
     '42',
+    'ordinary',
     '#1005',
     'TEST-BBBGE-SP1M',
+    '4',
+    '0.752',
     'SPEPH061801306218',
     'https://drive.google.com/file/d/test/view',
     '2026-08-28T01:02:03.000Z',
@@ -51,6 +57,6 @@ test('builds a monitoring row without customer personal information', () => {
 
 test('escapes Google Sheet tab names and parses updated row numbers', () => {
   assert.equal(quoteSheetTitle("Ninja Van's AWBs"), "'Ninja Van''s AWBs'");
-  assert.equal(rowNumberFromRange("'AWB Monitoring'!A12:H12"), 12);
+  assert.equal(rowNumberFromRange("'AWB Monitoring'!A12:K12"), 12);
   assert.equal(rowNumberFromRange(''), null);
 });

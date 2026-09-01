@@ -10,8 +10,11 @@ const GOOGLE_SCOPES = [
 ];
 const SHEET_HEADERS = [
   'Shipment ID',
+  'Order Type',
   'Shopify Order',
   'SKU',
+  'Physical Boxes',
+  'Weight (KG)',
   'SPX Tracking Number',
   'AWB PDF',
   'Generated At',
@@ -124,8 +127,11 @@ function buildSheetRow(
 ) {
   return [
     String(shipment.id),
+    String(shipment.shipment_kind || 'subscription'),
     String(shipment.shopify_delivery_order_name || shipment.order_id || ''),
     String(shipment.product_sku || ''),
+    String(shipment.physical_box_count || 1),
+    String(shipment.parcel_weight_kg || ''),
     String(shipment.spx_tracking_number || ''),
     String(driveUrl),
     generatedAt.toISOString(),
@@ -221,14 +227,15 @@ async function upsertSheetRow(sheets, shipment, driveUrl) {
   const spreadsheetId = requiredEnv('GOOGLE_SHEET_ID');
   const tab = optionalEnv('GOOGLE_SHEET_TAB', 'AWB Monitoring');
   const quotedTab = quoteSheetTitle(tab);
-  const range = `${quotedTab}!A:H`;
+  const lastColumn = 'K';
+  const range = `${quotedTab}!A:${lastColumn}`;
   const current = await sheets.spreadsheets.values.get({ spreadsheetId, range });
   const rows = current.data.values || [];
 
   if (!rows.length) {
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${quotedTab}!A1:H1`,
+      range: `${quotedTab}!A1:${lastColumn}1`,
       valueInputOption: 'RAW',
       requestBody: { values: [SHEET_HEADERS] },
     });
@@ -244,11 +251,11 @@ async function upsertSheetRow(sheets, shipment, driveUrl) {
       shipment,
       driveUrl,
       new Date(),
-      rows[existingIndex][6] || 'Pending'
+      rows[existingIndex][9] || 'Pending'
     );
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${quotedTab}!A${rowNumber}:H${rowNumber}`,
+      range: `${quotedTab}!A${rowNumber}:${lastColumn}${rowNumber}`,
       valueInputOption: 'RAW',
       requestBody: { values: [values] },
     });

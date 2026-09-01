@@ -1,21 +1,26 @@
 # B&B BEAU+ Subscription System Setup Guide
 
-**Updated:** August 22, 2026
+**Updated:** September 1, 2026
 
-**Status:** Shopify admin and backend workflow implemented; SPX UAT account and
-API access verified. SellerCraft/Anchanto SKU mapping and end-to-end order tests
-still require coordination with Ninja Van.
+**Status:** Shopify admin and backend workflow implemented. SellerCraft
+synchronized Shopify test order #1005 to Anchanto, and Shopify cancellation
+also synchronized successfully. The order entered the expected out-of-stock
+problem state because warehouse inventory was zero. SPX account verification,
+order creation, tracking retrieval, and AWB PDF generation all passed in UAT.
+Google Drive/Sheet automation is implemented in code but still needs client
+credentials and one live integration test.
 
 ## System purpose
 
 The store sells two ordinary products and two prepaid monthly-delivery products.
-Customers pay the complete plan price through the normal Shopify checkout. The
-custom app records only prepaid plan purchases and schedules their deliveries.
+Customers pay through the normal Shopify checkout. The custom app records every
+order for fulfillment, while only prepaid plan purchases create subscriptions
+and future scheduled deliveries.
 
 Current variant rules:
 
-- Ordinary variants: `7 Sachets`, `14 Sachets`, and `28 Sachets`. These remain
-  normal Shopify orders and must not create subscriptions.
+- Ordinary variants: `7 Sachets`, `14 Sachets`, and `28 Sachets`. These create
+  one-time shipment rows but must not create subscriptions.
 - Prepaid variants: titles beginning with `1-Month Plan`, `3-Month Plan`,
   `6-Month Plan`, or `12-Month Plan`. These create 1, 3, 6, or 12 scheduled
   shipments.
@@ -34,7 +39,7 @@ Customer checks out in Shopify
         |
         +--> Signed Shopify webhook reaches the Express backend
                  |
-                 +--> ordinary variant: ignored by subscription system
+                 +--> ordinary variant: one-time fulfillment shipment
                  |
                  +--> prepaid plan: subscription + calendar-month schedule
 
@@ -64,6 +69,9 @@ the AWB to the warehouse.
 - Theme app block for selecting prepaid plan variants before Shopify checkout.
 - Raw-body Shopify HMAC verification and duplicate-order protection.
 - Strict variant-title detection that ignores ordinary sachet variants.
+- Separate ordinary-order and subscription-delivery queues in the dashboard.
+- Physical-box and parcel-weight calculation at 188 g per box (1/2/4 boxes for
+  7/14/28 sachets; 4 boxes or 0.752 kg per monthly prepaid delivery).
 - Calendar-month schedule generation in PostgreSQL/Supabase.
 - Shipment 1 linking to the original checkout order.
 - Retryable, tagged zero-value Shopify orders for shipment 2 onward.
@@ -71,6 +79,8 @@ the AWB to the warehouse.
   plus mock OMS/WMS progression for isolated testing.
 - Signed SPX API 1.4 batch order submission, API 1.5 tracking retrieval, and API
   1.6 AWB retrieval.
+- Signed SPX tracking webhook with replay protection and automatic shipment
+  status updates.
 - SPX UAT address isolation so real customer addresses are never sent to UAT.
 - SPX mass-order Excel generation only after warehouse status is `packed`.
 - Manual SPX tracking and optional HTTPS AWB PDF recording.
@@ -78,6 +88,8 @@ the AWB to the warehouse.
   SPX API 1.6 completes.
 - AWB handoff state, Shopify fulfillment action, manual status changes, and
   subscription cancellation.
+- Shopify order-cancellation webhook for matching pending shipments.
+- Customer SMS disabled by default; Shopify handles customer notifications.
 
 ## Required configuration
 
@@ -114,24 +126,33 @@ For UAT, use `SPX_ENVIRONMENT=uat` and
 the approved Amsic-to-Agsam address profile. Configure only test phone numbers
 and SPX-confirmed postal codes; never use real customer data in UAT.
 
-## SellerCraft and Anchanto setup
+## SellerCraft and Anchanto status
 
 Ninja Van's team manages the SellerCraft account/connection. They requested
 Shopify access to products, orders, inventory, and locations. Use a dedicated
 staff account or custom role rather than sharing the store owner's password when
 possible.
 
-Before placing a test order:
+Completed validation:
 
-1. Assign a unique SKU to the chosen test variant.
-2. Ask Ninja Van to confirm that SKU is synchronized and mapped in both
-   SellerCraft and Anchanto.
-3. Confirm the invited staff account has been accepted; `Pending` means access
-   is not active yet.
-4. Create one Shopify test order only after mapping is confirmed.
-5. Verify Shopify -> SellerCraft OMS -> Anchanto WMS.
-6. Have the warehouse mark the order packed and verify that fulfillment status
-   returns through SellerCraft to Shopify.
+1. Ninja Van connected Shopify to SellerCraft using the approved access token
+   and staff access.
+2. Product and order synchronization are enabled.
+3. A paid, unfulfilled Shopify test order synchronized to Anchanto.
+4. Anchanto correctly identified the mapped SKU and placed the order in
+   `Problem` because no warehouse stock was available.
+5. Cancelling the Shopify order synchronized the cancellation to Anchanto.
+6. Shopify SKUs and Anchanto Product Master SKUs were updated to match.
+
+Current operating rules:
+
+- Notify Ninja Van before creating or changing test SKUs/orders because synced
+  orders can be dispatched once warehouse stock exists.
+- Product price edits can synchronize; coordinate material catalog changes.
+- Do not enable pre-orders until Ninja Van confirms the Product Master,
+  inventory/hold behavior, and release process.
+- Packed confirmation remains manual in this app because there is no direct
+  Anchanto status API contract.
 
 ## SPX status and testing
 
@@ -144,7 +165,9 @@ The separate `spx-test` client:
 - matches SPX's published HMAC-SHA256 signature test vector;
 - sends `app-id`, `timestamp`, `random-num`, and `check-sign` headers;
 - preserves the exact signed JSON body and `int64` user IDs;
-- successfully created and verified the SPX UAT user account.
+- successfully created and verified the SPX UAT user account;
+- successfully created a UAT order, retrieved its tracking number, and
+  generated the AWB PDF.
 
 The app now follows SPX's asynchronous order flow:
 
@@ -160,8 +183,37 @@ The app now follows SPX's asynchronous order flow:
 
 Excel export and manual tracking confirmation remain available as fallbacks.
 UAT defaults to drop-off because pickup requires API 1.1 timeslot values. Live
-pickup must not be enabled until Ninja Van supplies the warehouse sender details
-and the pickup-timeslot flow is implemented and verified.
+pickup must not be enabled until SPX confirms the supplied Ninja Van warehouse
+address hierarchy and the pickup-timeslot flow is implemented and verified.
+
+For live credential provisioning, provide SPX this callback URL:
+
+```text
+https://shopify-subscription-backend.onrender.com/spx/webhooks/tracking
+```
+
+Configure the live app ID/secret before their callback test. The backend must
+be on an always-on Render instance because SPX requires an HTTP 200 response
+within three seconds and can stop callbacks after repeated timeouts.
+
+## Google AWB monitoring status
+
+The backend can automatically download the temporary SPX AWB PDF, archive it in
+Google Drive, and add or update a Google Sheet row keyed by shipment ID. It
+preserves a warehouse-edited print status and excludes customer PII.
+
+Still required:
+
+1. Create or select the client's Google Cloud project.
+2. Enable Google Drive API and Google Sheets API.
+3. Create a service account and keep its JSON key only in backend secrets.
+4. Create a private/shared AWB Drive folder and an `AWB Monitoring` Sheet tab.
+   Keep columns A-K available; the backend writes the headers automatically.
+5. Share both with the service-account email and Ninja Van's approved accounts.
+6. Configure `GOOGLE_AWB_MODE=api`,
+   `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`, `GOOGLE_DRIVE_FOLDER_ID`, and
+   `GOOGLE_SHEET_ID` on the backend host.
+7. Run one dashboard SPX UAT booking through Drive upload and Sheet upsert.
 
 ## Verification commands
 
@@ -194,15 +246,29 @@ UAT mutation.
 - The system is currently single-store and backend records are not shop-scoped.
 - Only the first matching prepaid line item in an order creates a subscription;
   carts with multiple prepaid lines need additional modeling.
+- Ordinary one-time products create fulfillment shipment rows and receive the
+  same SPX booking and Google AWB workflow without becoming subscriptions.
 - The webhook does not yet enforce paid financial status.
+- The Shopify `Order cancellation` webhook must be registered separately for
+  automatic cancellation of matching pending internal records.
 - SellerCraft/Anchanto exposes no direct API to this app, so packed and AWB-shared
   states are operator-confirmed in `OMS_MODE=manual`.
-- Live SPX pickup still needs API 1.1 timeslot selection and Ninja Van's complete
-  warehouse sender information.
+- Live SPX pickup still needs API 1.1 timeslot selection and confirmation of
+  SPX's exact hierarchy for the supplied Ninja Van Cabuyao warehouse address.
 - Each recurring plan SKU must be mapped in Anchanto to the correct physical
   monthly pack; different 1/3/6/12-month SKUs do not automatically share stock.
-- SMS provider behavior has not been production-verified.
 - Dashboard list endpoints do not yet paginate.
+
+## Prioritized next actions
+
+1. Request SPX production credentials, production base URL, account activation,
+   and go-live requirements.
+2. Confirm the Cabuyao warehouse address hierarchy and final pickup process,
+   then implement and verify SPX API 1.1 timeslot selection.
+3. Configure Google Drive/Sheets credentials and complete one live UAT archive.
+4. Confirm Ninja Van's pre-order hold/release rules before accepting pre-orders.
+5. Add paid-status handling, route-level integration
+   tests, pagination, and dependency-security remediation.
 
 ## Security reminders
 
