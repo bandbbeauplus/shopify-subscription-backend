@@ -29,6 +29,9 @@ reconciliation. Read `README.md` before changing the workflow.
   and AWB PDF generation are confirmed. Direct booking must use
   `src/services/spxClient.js`: API 1.4 creates a batch, API 1.5 returns the
   tracking number, and API 1.6 returns the AWB link.
+- For live pickup orders, API 1.1 must run immediately before API 1.4. Use the
+  earliest SPX-returned slot unless all three `SPX_PICKUP_*` override values are
+  deliberately configured together.
 - SPX tracking callbacks belong at `/spx/webhooks/tracking`, outside Shopify's
   HMAC middleware. Preserve exact raw-body signature verification, timestamp
   freshness, event-ID idempotency, and non-regressing delivery status updates.

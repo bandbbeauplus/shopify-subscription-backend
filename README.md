@@ -36,9 +36,11 @@ remain warehouse prerequisites.
 Google Drive archival and Google Sheet upsert code is implemented but has not
 been live-tested because the backend does not yet have the client's Google
 service-account, folder, and spreadsheet configuration. Production SPX
-activation still requires live credentials, confirmation of the SPX address
-hierarchy for Ninja Van's Cabuyao warehouse, and an SPX pickup-timeslot
-workflow. Customer SMS is disabled because Shopify owns customer notifications.
+activation still requires confirmation of the SPX address hierarchy for Ninja
+Van's Cabuyao warehouse. For pickup orders, the backend calls SPX API 1.1
+immediately before API 1.4 and uses the earliest returned timeslot. The three
+`SPX_PICKUP_*` values are optional operational overrides only. Customer SMS is
+disabled because Shopify owns customer notifications.
 
 The API currently assumes a single Shopify store. Records are not scoped by shop, and the dashboard uses one shared API key.
 
@@ -306,7 +308,6 @@ verified.
   monitoring Sheet; configure the backend and run one end-to-end UAT upload.
 - Confirm the pre-order/stock-hold procedure with Ninja Van before enabling
   pre-orders while inventory is unavailable.
-- Add SPX API 1.1 pickup-timeslot selection before enabling live pickup.
 - Move the Render backend to an always-on production instance before enabling
   SPX tracking callbacks.
 - Add a cron job to catch shipments whose date passed without action, and

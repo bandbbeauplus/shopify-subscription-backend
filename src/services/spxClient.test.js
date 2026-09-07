@@ -14,6 +14,7 @@ const {
   generateCheckSign,
   normalizeAwbResult,
   normalizeOrderResult,
+  normalizePickupTimeslots,
   parseSpxResponse,
   serializeWithUserId,
 } = require('./spxClient');
@@ -97,4 +98,18 @@ test('normalizes asynchronous AWB results', () => {
   assert.deepEqual(normalizeAwbResult({ task_status: 4, awb_link: 'https://example.test/awb.pdf' }), {
     state: 'ready', taskStatus: 4, awbUrl: 'https://example.test/awb.pdf',
   });
+});
+
+test('normalizes pickup timeslots in the order returned by SPX', () => {
+  assert.deepEqual(normalizePickupTimeslots([{
+    date: '07-09-2026',
+    pickup_time: 1788768000,
+    slots: [
+      { pickup_time_range_id: 1, pickup_time_range: '08:00-12:00' },
+      { pickup_time_range_id: 2, pickup_time_range: '12:01-19:00' },
+    ],
+  }]), [
+    { pickup_time: 1788768000, pickup_time_range_id: 1, pickup_time_range: '08:00-12:00' },
+    { pickup_time: 1788768000, pickup_time_range_id: 2, pickup_time_range: '12:01-19:00' },
+  ]);
 });

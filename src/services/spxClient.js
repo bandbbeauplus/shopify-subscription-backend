@@ -235,7 +235,54 @@ function spxOrderId(shipment) {
   return `BB-${shipment.id}`.slice(0, 32);
 }
 
-function buildCreateOrderPayload(shipment) {
+function pickupSlotOverride() {
+  const pickupTime = optionalEnv('SPX_PICKUP_TIME');
+  const rangeId = optionalEnv('SPX_PICKUP_TIME_RANGE_ID');
+  const range = optionalEnv('SPX_PICKUP_TIME_RANGE');
+  const configuredCount = [pickupTime, rangeId, range].filter(Boolean).length;
+  if (configuredCount === 0) return null;
+  if (configuredCount !== 3) {
+    throw httpError(503, 'SPX pickup override requires SPX_PICKUP_TIME, SPX_PICKUP_TIME_RANGE_ID, and SPX_PICKUP_TIME_RANGE together');
+  }
+  return {
+    pickup_time: positiveNumber('SPX_PICKUP_TIME', '', { min: 1 }),
+    pickup_time_range_id: positiveNumber('SPX_PICKUP_TIME_RANGE_ID', '', { min: 1 }),
+    pickup_time_range: range,
+  };
+}
+
+function normalizePickupTimeslots(data) {
+  const dates = Array.isArray(data) ? data : [];
+  return dates.flatMap((date) => {
+    const pickupTime = Number(date?.pickup_time);
+    if (!Number.isFinite(pickupTime) || pickupTime <= 0) return [];
+    const slots = Array.isArray(date?.slots) ? date.slots : [];
+    return slots.flatMap((slot) => {
+      const rangeId = Number(slot?.pickup_time_range_id);
+      const range = String(slot?.pickup_time_range || '').trim();
+      if (!Number.isFinite(rangeId) || rangeId < 1 || !range) return [];
+      return [{
+        pickup_time: pickupTime,
+        pickup_time_range_id: rangeId,
+        pickup_time_range: range,
+      }];
+    });
+  });
+}
+
+async function resolvePickupSlot() {
+  const override = pickupSlotOverride();
+  if (override) return override;
+  const data = await callSpx('/open/api/v1/order/get_pickup_time', {
+    user_secret: requiredEnv('SPX_USER_SECRET'),
+    service_type: 1,
+  });
+  const slots = normalizePickupTimeslots(data);
+  if (!slots.length) throw httpError(502, 'SPX returned no available pickup timeslots');
+  return slots[0];
+}
+
+function buildCreateOrderPayload(shipment, { pickupSlot = null } = {}) {
   const collectType = Number(optionalEnv('SPX_COLLECT_TYPE', SPX_ENVIRONMENT === 'uat' ? '2' : '1'));
   if (![1, 2].includes(collectType)) throw httpError(503, 'SPX_COLLECT_TYPE must be 1 (pickup) or 2 (drop off)');
 
@@ -245,9 +292,13 @@ function buildCreateOrderPayload(shipment) {
     collect_type: collectType,
   };
   if (collectType === 1) {
-    fulfillmentInfo.pickup_time = positiveNumber('SPX_PICKUP_TIME', '', { min: 1 });
-    fulfillmentInfo.pickup_time_range_id = positiveNumber('SPX_PICKUP_TIME_RANGE_ID', '', { min: 1 });
-    fulfillmentInfo.pickup_time_range = requiredEnv('SPX_PICKUP_TIME_RANGE');
+    const selectedSlot = pickupSlot || pickupSlotOverride();
+    if (!selectedSlot) {
+      throw httpError(503, 'SPX pickup timeslot must be resolved before creating a pickup order');
+    }
+    fulfillmentInfo.pickup_time = Number(selectedSlot.pickup_time);
+    fulfillmentInfo.pickup_time_range_id = Number(selectedSlot.pickup_time_range_id);
+    fulfillmentInfo.pickup_time_range = String(selectedSlot.pickup_time_range || '').trim();
   }
 
   return {
@@ -312,7 +363,12 @@ async function callSpx(endpoint, payload) {
 }
 
 async function createOrder(shipment) {
-  const data = await callSpx('/open/api/v2/order/batch_create_order', buildCreateOrderPayload(shipment));
+  const collectType = Number(optionalEnv('SPX_COLLECT_TYPE', SPX_ENVIRONMENT === 'uat' ? '2' : '1'));
+  const pickupSlot = collectType === 1 ? await resolvePickupSlot() : null;
+  const data = await callSpx(
+    '/open/api/v2/order/batch_create_order',
+    buildCreateOrderPayload(shipment, { pickupSlot })
+  );
   const batchNo = String(data.batch_no || '').trim();
   if (!/^\d+$/.test(batchNo)) throw httpError(502, 'SPX create-order response did not contain a valid batch number');
   return { batchNo, orderId: spxOrderId(shipment) };
@@ -385,7 +441,9 @@ module.exports = {
   isSpxConfigured,
   normalizeAwbResult,
   normalizeOrderResult,
+  normalizePickupTimeslots,
   parseSpxResponse,
+  resolvePickupSlot,
   serializeWithUserId,
   spxOrderId,
 };
