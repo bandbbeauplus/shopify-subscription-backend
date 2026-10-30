@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const axios = require('axios');
 const httpError = require('../utils/httpError');
 const { shipmentParcelProfile } = require('../utils/parcelProfile');
+const { assertPickupLocation, resolveDeliveryLocation } = require('./spxLocationMap');
 
 const SPX_MODE = process.env.SPX_MODE || 'disabled';
 const SPX_ENVIRONMENT = process.env.SPX_ENVIRONMENT || 'uat';
@@ -133,7 +134,7 @@ function isSpxConfigured() {
 function senderInfo() {
   const profile = SPX_ENVIRONMENT === 'uat' ? UAT_ADDRESS_PROFILE.sender : null;
   const isUat = Boolean(profile);
-  return {
+  const sender = {
     sender_state: compactText(profile?.state || requiredEnv('SPX_SENDER_STATE'), 64, 'sender state'),
     sender_city: compactText(profile?.city || requiredEnv('SPX_SENDER_CITY'), 64, 'sender city'),
     sender_district: compactText(profile?.district || requiredEnv('SPX_SENDER_DISTRICT'), 64, 'sender district'),
@@ -162,18 +163,38 @@ function senderInfo() {
       'sender detailed address'
     ),
   };
+  if (!isUat) {
+    const location = assertPickupLocation({
+      state: sender.sender_state,
+      city: sender.sender_city,
+      district: sender.sender_district,
+      street: sender.sender_street,
+    });
+    sender.sender_state = location.state;
+    sender.sender_city = location.city;
+    sender.sender_district = location.district;
+    sender.sender_street = location.street;
+  }
+  return sender;
 }
 
 function receiverInfo(shipment) {
   const address = shipment.shipping_address || {};
   const profile = SPX_ENVIRONMENT === 'uat' ? UAT_ADDRESS_PROFILE.receiver : null;
   const isUat = Boolean(profile);
+  const location = isUat ? profile : resolveDeliveryLocation(address);
+  const detailAddress = isUat
+    ? optionalEnv('SPX_UAT_RECEIVER_DETAIL_ADDRESS', profile.street)
+    : [address.address1, address.address2].filter(Boolean).join(', ');
+  if (!isUat && String(detailAddress).trim().replace(/\s+/g, ' ').length > 256) {
+    throw httpError(422, 'SPX customer detailed address exceeds 256 characters; confirm a shorter accurate address before booking');
+  }
   return {
     deliver_country: 'PH',
-    deliver_state: compactText(profile?.state || address.province, 64, 'delivery state/province'),
-    deliver_city: compactText(profile?.city || address.city, 64, 'delivery city'),
-    deliver_district: compactText(profile?.district || address.district || address.address2, 64, 'delivery district/barangay'),
-    deliver_street: compactText(profile?.street || address.street || address.address1, 64, 'delivery street'),
+    deliver_state: compactText(location.state, 64, 'delivery state/province'),
+    deliver_city: compactText(location.city, 64, 'delivery city'),
+    deliver_district: compactText(location.district, 64, 'delivery district/barangay'),
+    deliver_street: compactText(location.street, 64, 'delivery street'),
     deliver_post_code: compactText(
       isUat ? requiredEnv('SPX_UAT_RECEIVER_POST_CODE') : address.zip,
       16,
@@ -188,13 +209,7 @@ function receiverInfo(shipment) {
       isUat ? requiredEnv('SPX_UAT_RECEIVER_PHONE') : (shipment.customer_phone || address.phone),
       'SPX receiver phone'
     ),
-    deliver_detail_address: compactText(
-      isUat
-        ? optionalEnv('SPX_UAT_RECEIVER_DETAIL_ADDRESS', profile.street)
-        : [address.address1, address.address2].filter(Boolean).join(', '),
-      256,
-      'receiver detailed address'
-    ),
+    deliver_detail_address: compactText(detailAddress, 256, 'receiver detailed address'),
     deliver_instruction: optionalEnv('SPX_DELIVERY_INSTRUCTION').slice(0, 256),
   };
 }
@@ -402,7 +417,7 @@ function normalizeOrderResult(data, expectedOrderId) {
   return {
     state: 'failed',
     taskStatus,
-    error: String(failure?.debug_msg || failure?.message || data.description || 'SPX order creation failed'),
+    error: String(failure?.message || 'SPX order creation failed'),
   };
 }
 

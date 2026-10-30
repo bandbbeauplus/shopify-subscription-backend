@@ -9,7 +9,7 @@ admin dashboard, SellerCraft/Anchanto preparation, and SPX handoff.
 This backend is an internal MVP. Shopify order HMAC verification,
 duplicate-order protection, transactional schedule creation, dashboard
 authentication, managed SellerCraft/Anchanto handoff, and signed SPX OpenAPI
-UAT booking are implemented.
+UAT and live booking paths are implemented.
 
 SPX account creation, account verification, API 1.4 order creation, API 1.5
 tracking retrieval, and API 1.6 AWB generation have all completed successfully
@@ -33,11 +33,10 @@ and a Shopify cancellation synchronized back to the warehouse order. The
 expected out-of-stock problem state confirmed that SKU and inventory mapping
 remain warehouse prerequisites.
 
-Google Drive archival and Google Sheet upsert code is implemented but has not
-been live-tested because the backend does not yet have the client's Google
-service-account, folder, and spreadsheet configuration. Production SPX
-activation still requires confirmation of the SPX address hierarchy for Ninja
-Van's Cabuyao warehouse. For pickup orders, the backend calls SPX API 1.1
+Google Drive archival and Google Sheet upsert have been exercised in UAT.
+The production SPX account and pickup booking are active. The backend validates
+live sender and receiver locations against the checked-in snapshot generated
+from SPX's `basic_location 1026.xlsx`. For pickup orders, it calls SPX API 1.1
 immediately before API 1.4 and uses the earliest returned timeslot. The three
 `SPX_PICKUP_*` values are optional operational overrides only. Customer SMS is
 disabled because Shopify owns customer notifications.
@@ -169,11 +168,33 @@ Visayas/Eastern Samar/Oras/Agsam receiver profile. It never sends a real
 customer address or notification. Postal codes and test phone numbers remain
 environment variables because they were not included in the supplied UAT file.
 
-In production, the receiver comes from Shopify. The Shopify address must include
-an exact barangay/district (currently read from `address2`), and Ninja Van must
-provide its warehouse sender name, phone, complete address, and postal code.
-Pickup (`SPX_COLLECT_TYPE=1`) also requires a current API 1.1 timeslot. Until
-those are confirmed, keep production disabled and use UAT or Excel fallback.
+In production, the receiver comes from Shopify. SPX's hierarchy is not the
+same as Shopify's: for example, Taguig/Fort Bonifacio becomes
+`Metro Manila / Metro Manila / Taguig City / Fort Bonifacio`. The backend maps
+Shopify province and city to SPX's canonical four-layer location and uses an
+exact barangay from `shipping_address.district`, `street`, or `address2`.
+`address1` remains the detailed unit/building/street address and is never
+guessed as a barangay. A missing, ambiguous, or non-serviceable location returns
+HTTP 422 before submitting API 1.4. A detailed address over 256 characters
+also fails rather than being silently truncated. The sender location from `SPX_SENDER_*`
+must likewise match a pickup-supported row or booking stops with HTTP 503.
+SPX's short failure code is shown instead of its raw request debug dump.
+Pickup (`SPX_COLLECT_TYPE=1`) also requires a current API 1.1 timeslot.
+
+The snapshot at `src/data/spxLocations.json` is generated, not hand-edited.
+When SPX supplies a newer live serviceable-area workbook, regenerate it from
+the backend directory, review the diff, run tests, and redeploy:
+
+```powershell
+node scripts/import-spx-locations.js "C:\path\to\new-basic-location.xlsx"
+npm test
+```
+
+The snapshot is not a live SPX availability guarantee. If the Shopify address
+does not uniquely identify a listed barangay, confirm the address with the
+customer rather than altering it to force a match. A previously failed SPX
+batch does not adopt a newly deployed mapping: verify the batch failed with no
+tracking/AWB, then reset only its SPX batch fields before creating a new one.
 
 ### SPX tracking webhook
 
@@ -300,12 +321,10 @@ verified.
 
 ## Next steps
 
-- Obtain the production SPX base URL, App ID/secret, account activation, and
-  production user credentials from SPX.
-- Confirm SPX's exact state/city/district/street hierarchy for the supplied
-  Ninja Van Cabuyao warehouse and the final pickup/drop-off process.
-- Create the client's Google service account, Shared Drive folder, and
-  monitoring Sheet; configure the backend and run one end-to-end UAT upload.
+- Keep the SPX serviceable-area snapshot current when SPX sends a new workbook.
+- Add an operator-safe retry path for confirmed failed SPX batches; until then,
+  verify the terminal result and absence of tracking/AWB before a guarded
+  database reset. Do not retry a batch that may still be processing.
 - Confirm the pre-order/stock-hold procedure with Ninja Van before enabling
   pre-orders while inventory is unavailable.
 - Move the Render backend to an always-on production instance before enabling

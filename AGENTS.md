@@ -41,6 +41,11 @@ reconciliation. Read `README.md` before changing the workflow.
 - In SPX UAT, use only the approved fixed address profile and never send real
   customer data. In production, require SPX-confirmed hierarchy values for the
   supplied warehouse sender and a valid pickup timeslot before enabling pickup.
+  Validate both live pickup and delivery four-layer locations against the
+  versioned SPX serviceable-area snapshot. Never guess a missing barangay or
+  replace the customer's detailed address with a location label. Regenerate
+  `src/data/spxLocations.json` with `scripts/import-spx-locations.js` when SPX
+  provides a newer workbook; do not hand-edit the generated snapshot.
 - Keep Excel export and manual AWB confirmation as operational fallbacks.
 - Calculate parcel weight at 188 g per physical box unless an explicit
   environment override is configured. Ordinary 7/14/28-sachet variants map to

@@ -90,7 +90,7 @@ test('normalizes asynchronous order creation results', () => {
   assert.equal(normalizeOrderResult({
     task_status: 4,
     fail_list: [{ order_id: 'BB-42', debug_msg: 'Address rejected' }],
-  }, 'BB-42').error, 'Address rejected');
+  }, 'BB-42').error, 'SPX order creation failed');
 });
 
 test('normalizes asynchronous AWB results', () => {
